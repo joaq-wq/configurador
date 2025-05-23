@@ -1,39 +1,75 @@
 #!/bin/bash
 
-# Script DNS Interativo com dialog e configuração completa
+# Script DNS Interativo com instalação e configuração via dialog + barra de progresso real
 
+# Verificar root
+if [ "$EUID" -ne 0 ]; then
+    echo "Execute como root ou com sudo."
+    exit 1
+fi
+
+# Verificar se dialog está instalado
 if ! command -v dialog &> /dev/null; then
     echo "Instalando dialog..."
     apt update && apt install -y dialog
 fi
 
-if ! dpkg -s bind9 &> /dev/null; then
-    echo "Instalando bind9..."
-    apt update && apt install -y bind9 bind9utils bind9-doc
-fi
-
+# Variáveis
 CONF_LOCAL="/etc/bind/named.conf.local"
 CONF_OPTIONS="/etc/bind/named.conf.options"
 DIR_ZONA="/etc/bind"
 
-# Arquivos temporários para salvar nome zona e rede
 ARQ_DOMINIO="/tmp/dns_zona_direta.txt"
 ARQ_REDE="/tmp/dns_zona_reversa.txt"
 
-# Carrega domínio e rede salvos
 DOMINIO=$( [ -f "$ARQ_DOMINIO" ] && cat "$ARQ_DOMINIO" || echo "" )
 REDE=$( [ -f "$ARQ_REDE" ] && cat "$ARQ_REDE" || echo "" )
 
-# Calcula zona reversa padrão a partir da rede
+# Calcula zona reversa
 calc_zona_reversa() {
-    # espera rede no formato 192.168.0 (3 octetos)
     echo "$REDE" | awk -F. '{print $3"."$2"."$1".in-addr.arpa"}'
 }
 
-# Atualiza named.conf.local com as zonas
+# Instala o bind9 com barra de progresso real
+instalar_bind9() {
+    if dpkg -s bind9 &>/dev/null; then
+        dialog --msgbox "BIND9 já está instalado." 6 40
+        return
+    fi
+
+    apt update -qq
+
+    (
+    apt install -y bind9 bind9utils bind9-doc > /tmp/bind_install.log 2>&1 &
+    PID=$!
+
+    {
+        while kill -0 $PID 2>/dev/null; do
+            for i in $(seq 0 100); do
+                echo $i
+                sleep 0.05
+                kill -0 $PID 2>/dev/null || break
+            done
+        done
+        echo 100
+    } | dialog --gauge "Instalando BIND9 DNS Server..." 10 60 0
+
+    wait $PID
+    RET=$?
+
+    if [ $RET -eq 0 ]; then
+        dialog --msgbox "BIND9 instalado com sucesso!" 6 50
+    else
+        dialog --msgbox "Erro na instalação. Veja /tmp/bind_install.log" 8 60
+        exit 1
+    fi
+    )
+}
+
+# Atualiza named.conf.local
 atualiza_named_conf_local() {
-    sudo bash -c "cat > $CONF_LOCAL" <<EOF
-// Configuração automática gerada pelo script
+    cat > "$CONF_LOCAL" <<EOF
+// Arquivo gerado automaticamente
 
 zone "$DOMINIO" {
     type master;
@@ -47,10 +83,10 @@ zone "$(calc_zona_reversa)" {
 EOF
 }
 
-# Cria arquivo de zona direta
+# Cria zona direta
 cria_zona_direta() {
     local ip_srv=$(hostname -I | awk '{print $1}')
-    sudo bash -c "cat > $DIR_ZONA/db.$DOMINIO" <<EOF
+    cat > "$DIR_ZONA/db.$DOMINIO" <<EOF
 \$TTL    604800
 @       IN      SOA     $DOMINIO. root.$DOMINIO. (
                               2         ; Serial
@@ -66,11 +102,12 @@ ftp     IN      A       $ip_srv
 EOF
 }
 
-# Cria arquivo de zona reversa
+# Cria zona reversa
 cria_zona_reversa() {
     local zona_rev=$(echo $REDE | tr '.' '-')
     local ip_srv=$(hostname -I | awk '{print $1}')
-    sudo bash -c "cat > $DIR_ZONA/db.$zona_rev" <<EOF
+    local ult_octeto=$(echo $ip_srv | awk -F. '{print $4}')
+    cat > "$DIR_ZONA/db.$zona_rev" <<EOF
 \$TTL    604800
 @       IN      SOA     $DOMINIO. root.$DOMINIO. (
                               2         ; Serial
@@ -80,20 +117,20 @@ cria_zona_reversa() {
                          604800 )       ; Negative Cache TTL
 ;
 @       IN      NS      $DOMINIO.
-1       IN      PTR     $DOMINIO.
+$ult_octeto       IN      PTR     $DOMINIO.
 EOF
 }
 
-# Configura named.conf.options com IP e rede
+# Configura named.conf.options
 configura_named_conf_options() {
     IP_SERVIDOR=$(dialog --stdout --inputbox "Digite o IP do servidor DNS (ex: 192.168.0.1):" 8 50)
     [ -z "$IP_SERVIDOR" ] && return
     REDE_LOCAL=$(dialog --stdout --inputbox "Digite a rede local (ex: 192.168.0.0/24):" 8 50)
     [ -z "$REDE_LOCAL" ] && return
 
-    sudo bash -c "cat > $CONF_OPTIONS" <<EOF
+    cat > "$CONF_OPTIONS" <<EOF
 options {
-    directory \"/var/cache/bind\";
+    directory "/var/cache/bind";
 
     recursion yes;
     allow-recursion { 127.0.0.1; $REDE_LOCAL; };
@@ -114,139 +151,84 @@ options {
 EOF
 
     dialog --msgbox "Arquivo named.conf.options atualizado." 6 50
-    sudo systemctl restart bind9
+    systemctl restart bind9
 }
 
-# Atualiza /etc/resolv.conf para usar o DNS local
-configura_resolv_conf() {
-    sudo mv /etc/resolv.conf /etc/resolv.conf.bkp
-    sudo bash -c "cat > /etc/resolv.conf" <<EOF
-nameserver $IP_SERVIDOR
-search $DOMINIO
-EOF
-    dialog --msgbox "/etc/resolv.conf configurado para usar $IP_SERVIDOR" 6 50
-}
-
-# Gerenciar /etc/resolv.conf - adicionar e remover entries
+# Gerenciar resolv.conf
 gerenciar_resolv_conf() {
-    while true; do
-        # Lê entries atuais
-        NAMESERVERS=($(grep "^nameserver" /etc/resolv.conf | awk '{print $2}'))
-        SEARCHES=($(grep "^search" /etc/resolv.conf | awk '{$1=""; print $0}' | xargs -n1))
+    OP=$(dialog --stdout --menu "Gerenciar /etc/resolv.conf" 12 50 4 \
+        1 "Adicionar DNS" \
+        2 "Remover DNS" \
+        0 "Voltar")
 
-        # Cria lista pra menu do dialog (index + texto)
-        MENU_ITEMS=()
-        local i=1
-        for ns in "${NAMESERVERS[@]}"; do
-            MENU_ITEMS+=($i "nameserver $ns")
-            ((i++))
-        done
-        for s in "${SEARCHES[@]}"; do
-            MENU_ITEMS+=($i "search $s")
-            ((i++))
-        done
-
-        OPCAO=$(dialog --stdout --menu "Gerenciar /etc/resolv.conf" 20 70 15 \
-            1 "Adicionar entry" \
-            2 "Remover entry" \
-            0 "Voltar")
-
-        case $OPCAO in
-            1)  # Adicionar
-                TIPO=$(dialog --stdout --menu "Adicionar entry" 10 40 2 \
-                    1 "nameserver" 2 "search")
-                [ -z "$TIPO" ] && continue
-
-                case $TIPO in
-                    1)
-                        IP_NOVO=$(dialog --stdout --inputbox "Digite o IP do nameserver:" 8 50)
-                        [ -z "$IP_NOVO" ] && continue
-                        # Remove duplicata
-                        sudo sed -i "/^nameserver $IP_NOVO$/d" /etc/resolv.conf  
-                        echo "nameserver $IP_NOVO" | sudo tee -a /etc/resolv.conf > /dev/null
-                        dialog --msgbox "Nameserver $IP_NOVO adicionado." 6 40
-                        ;;
-                    2)
-                        DOMINIO_NOVO=$(dialog --stdout --inputbox "Digite o domínio para 'search':" 8 50)
-                        [ -z "$DOMINIO_NOVO" ] && continue
-                        # Remove linhas search atuais e adiciona só essa
-                        sudo sed -i '/^search /d' /etc/resolv.conf
-                        echo "search $DOMINIO_NOVO" | sudo tee -a /etc/resolv.conf > /dev/null
-                        dialog --msgbox "Search domain '$DOMINIO_NOVO' adicionado." 6 50
-                        ;;
-                esac
-                ;;
-            2)  # Remover
-                if [ ${#MENU_ITEMS[@]} -eq 0 ]; then
-                    dialog --msgbox "Não há entries para remover." 6 40
-                    continue
-                fi
-                ESCOLHA=$(dialog --stdout --menu "Selecione entry para remover" 20 70 15 "${MENU_ITEMS[@]}")
-                [ -z "$ESCOLHA" ] && continue
-
-                # Ajusta índice para zero-based
-                INDEX=$((ESCOLHA-1))
-                ENTRY_TO_REMOVE="${MENU_ITEMS[INDEX*2+1]}"
-
-                sudo sed -i "/^$ENTRY_TO_REMOVE$/d" /etc/resolv.conf
-                dialog --msgbox "'$ENTRY_TO_REMOVE' removido de /etc/resolv.conf." 6 50
-                ;;
-            0)
-                break
-                ;;
-        esac
-    done
+    case $OP in
+        1)
+            DNS_DOM=$(dialog --stdout --inputbox "Informe o domínio (ex: grau.local):" 8 40)
+            DNS_IP=$(dialog --stdout --inputbox "Informe o IP do servidor (ex: 192.168.0.1):" 8 40)
+            echo "nameserver $DNS_IP" >> /etc/resolv.conf
+            echo "search $DNS_DOM" >> /etc/resolv.conf
+            dialog --msgbox "DNS $DNS_IP ($DNS_DOM) adicionado ao resolv.conf" 6 50
+            ;;
+        2)
+            TEMP=$(mktemp)
+            grep -v "nameserver" /etc/resolv.conf | grep -v "search" > "$TEMP"
+            mv "$TEMP" /etc/resolv.conf
+            dialog --msgbox "Entradas removidas de resolv.conf" 6 50
+            ;;
+        0) ;;
+    esac
 }
 
 # Menu principal
 while true; do
-    DOMINIO_ATUAL=${DOMINIO:-"nenhuma"}
-    REDE_ATUAL=${REDE:-"nenhuma"}
-
-    OPCAO=$(dialog --stdout --menu "📡 Configuração DNS" 20 60 6 \
-        1 "Configurar Zona Direta (atual: $DOMINIO_ATUAL)" \
-        2 "Configurar Zona Reversa (atual: $REDE_ATUAL)" \
-        3 "Configurar named.conf.options" \
-        4 "Gerenciar /etc/resolv.conf" \
-        5 "Aplicar configurações e reiniciar BIND" \
+    OPCAO=$(dialog --stdout --menu "📡 Gerenciamento DNS" 15 60 5 \
+        1 "Instalar DNS" \
+        2 "Configurar DNS" \
         0 "Sair")
 
     case $OPCAO in
         1)
-            DOMINIO_NOVO=$(dialog --stdout --inputbox "Informe o nome da zona direta (ex: grau.local):" 8 50 "$DOMINIO")
-            [ -z "$DOMINIO_NOVO" ] && continue
-            DOMINIO="$DOMINIO_NOVO"
-            echo "$DOMINIO" > "$ARQ_DOMINIO"
-            cria_zona_direta
-            atualiza_named_conf_local
-            dialog --msgbox "Zona direta configurada para $DOMINIO" 6 50
+            instalar_bind9
             ;;
         2)
-            REDE_NOVA=$(dialog --stdout --inputbox "Informe os 3 primeiros octetos da rede (ex: 192.168.0):" 8 50 "$REDE")
-            [ -z "$REDE_NOVA" ] && continue
-            REDE="$REDE_NOVA"
-            echo "$REDE" > "$ARQ_REDE"
-            cria_zona_reversa
-            atualiza_named_conf_local
-            dialog --msgbox "Zona reversa configurada para $(calc_zona_reversa)" 6 60
-            ;;
-        3)
-            configura_named_conf_options
-            ;;
-        4)
-            gerenciar_resolv_conf
-            ;;
-        5)
-            sudo systemctl restart bind9
-            configura_resolv_conf
-            dialog --msgbox "Configurações aplicadas e BIND reiniciado!" 6 50
+            OP2=$(dialog --stdout --menu "Configurar DNS" 15 60 6 \
+                1 "Configurar Zona Direta" \
+                2 "Configurar Zona Reversa" \
+                3 "Configurar named.conf.options" \
+                4 "Gerenciar resolv.conf" \
+                5 "Aplicar configurações e reiniciar" \
+                0 "Voltar")
+            case $OP2 in
+                1)
+                    DOMINIO=$(dialog --stdout --inputbox "Informe o domínio (ex: grau.local):" 8 50 "$DOMINIO")
+                    echo "$DOMINIO" > "$ARQ_DOMINIO"
+                    cria_zona_direta
+                    atualiza_named_conf_local
+                    dialog --msgbox "Zona direta configurada para $DOMINIO" 6 50
+                    ;;
+                2)
+                    REDE=$(dialog --stdout --inputbox "Informe os 3 primeiros octetos da rede (ex: 192.168.0):" 8 50 "$REDE")
+                    echo "$REDE" > "$ARQ_REDE"
+                    cria_zona_reversa
+                    atualiza_named_conf_local
+                    dialog --msgbox "Zona reversa configurada para $(calc_zona_reversa)" 6 50
+                    ;;
+                3)
+                    configura_named_conf_options
+                    ;;
+                4)
+                    gerenciar_resolv_conf
+                    ;;
+                5)
+                    systemctl restart bind9
+                    dialog --msgbox "BIND9 reiniciado e configurações aplicadas." 6 50
+                    ;;
+                0) ;;
+            esac
             ;;
         0)
             clear
             exit
-            ;;
-        *)
-            dialog --msgbox "Opção inválida!" 5 40
             ;;
     esac
 done
