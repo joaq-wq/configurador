@@ -43,7 +43,7 @@ while true; do
 
     case $OPCAO in
         1) bash ./configurar_ssh.sh ;;
-        2) dialog --msgbox "🚧 Em construção..." 6 40 ;;
+        2) bash ./configurar_dns.sh ;;
         3) dialog --msgbox "🚧 Em construção..." 6 40 ;;
         4) dialog --msgbox "🚧 Em construção..." 6 40 ;;
         5) dialog --msgbox "🚧 Em construção..." 6 40 ;;
