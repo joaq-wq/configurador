@@ -1,80 +1,92 @@
 #!/bin/bash
 
 # =============================
-# Script Master de DNS - by Joaquimkj
+# Script Master de DNS Interativo
 # =============================
 
-# ========== Verifica se é root ==========
-if [ "$EUID" -ne 0 ]; then
-    echo "❌ Este script precisa ser executado como root."
-    exit 1
+# Verifica se o dialog está instalado
+if ! command -v dialog &> /dev/null; then
+    echo "Instalando dialog..."
+    apt update && apt install -y dialog
 fi
 
-# ========== Função para instalar pacotes ==========
-instalar_pacote() {
-    PACOTE=$1
-    if ! dpkg -s "$PACOTE" &> /dev/null; then
-        (
-        echo 20; echo "🔄 Atualizando pacotes..."; sleep 1
-        apt update -y &>/dev/null
-        echo 60; echo "⬇️ Instalando $PACOTE..."; sleep 1
-        apt install -y "$PACOTE" &>/dev/null
-        echo 100; echo "✅ $PACOTE instalado."; sleep 1
-        ) | dialog --gauge "⏳ Instalando $PACOTE..." 10 60 0
+# Instala Bind9 se não tiver
+if ! dpkg -l | grep -q bind9; then
+    dialog --title "Instalação do DNS" --msgbox "O Bind9 não está instalado. Instalando agora..." 7 50
+    apt update && apt install -y bind9 bind9utils bind9-doc
+fi
 
-        if ! dpkg -s "$PACOTE" &> /dev/null; then
-            echo "❌ Falha na instalação do $PACOTE. Verifique sua conexão ou fontes do APT."
-            exit 1
-        fi
-    fi
-}
-
-# ========== Instala dependências ==========
-instalar_pacote dialog
-instalar_pacote bind9
-instalar_pacote bind9utils
-instalar_pacote bind9-doc
-
-# ========== Caminhos ==========
+# Arquivos importantes
 CONF_LOCAL="/etc/bind/named.conf.local"
 DIR_ZONA="/etc/bind"
 
-# ========== Função Principal ==========
-configurar_dns() {
+# Arquivos para armazenar domínios atuais (temporários)
+ARQ_DOMINIO="/tmp/dns_zona_direta.txt"
+ARQ_REDE="/tmp/dns_zona_reversa.txt"
 
-    # Domínio da zona direta
-    DOMINIO=$(dialog --stdout --inputbox "Digite o nome da Zona Direta (ex: empresa.com):" 8 50)
-    [ -z "$DOMINIO" ] && exit
+# Lê domínio atual salvo, ou vazio
+DOMINIO=$( [ -f "$ARQ_DOMINIO" ] && cat "$ARQ_DOMINIO" || echo "" )
+REDE=$( [ -f "$ARQ_REDE" ] && cat "$ARQ_REDE" || echo "" )
+ZONA_REVERSE=""
 
-    # IP da rede para zona reversa
-    REDE=$(dialog --stdout --inputbox "Digite o IP da rede para a Zona Reversa (ex: 192.168.1):" 8 50)
-    [ -z "$REDE" ] && exit
-
+if [[ -n "$REDE" ]]; then
     ZONA_REVERSE=$(echo $REDE | awk -F. '{print $3"."$2"."$1".in-addr.arpa"}')
+fi
 
-    # Arquivos de zona
+# Função para ajustar named.conf.options
+ajustar_named_conf_options() {
+    local IP_SERVIDOR=""
+    local REDE_LOCAL=""
+
+    IP_SERVIDOR=$(dialog --stdout --inputbox "Digite o IP do servidor DNS (ex: 192.168.0.1):" 8 50 "$IP_SERVIDOR")
+    [ -z "$IP_SERVIDOR" ] && return
+
+    REDE_LOCAL=$(dialog --stdout --inputbox "Digite a rede local com máscara (ex: 192.168.0.0/24):" 8 50 "$REDE_LOCAL")
+    [ -z "$REDE_LOCAL" ] && return
+
+    sudo bash -c "cat > /etc/bind/named.conf.options" <<EOF
+options {
+    directory "/var/cache/bind";
+
+    recursion yes;
+    allow-recursion { 127.0.0.1; $REDE_LOCAL; };
+    allow-query { 127.0.0.1; $REDE_LOCAL; };
+
+    listen-on { 127.0.0.1; $IP_SERVIDOR; };
+
+    forwarders {
+        8.8.8.8;
+        8.8.4.4;
+    };
+
+    dnssec-validation auto;
+
+    auth-nxdomain no;
+    listen-on-v6 { any; };
+};
+EOF
+
+    dialog --msgbox "Arquivo /etc/bind/named.conf.options atualizado com sucesso!" 6 60
+    sudo systemctl restart bind9
+}
+
+# Função para configurar zona direta
+configurar_zona_direta() {
+    local DOMINIO_NOVO=""
+    DOMINIO_NOVO=$(dialog --stdout --inputbox "Digite o nome da Zona Direta (ex: empresa.com):" 8 50 "$DOMINIO")
+    [ -z "$DOMINIO_NOVO" ] && return
+
+    DOMINIO="$DOMINIO_NOVO"
+    echo "$DOMINIO" > "$ARQ_DOMINIO"
+
     ZONA_DIR="$DIR_ZONA/db.$DOMINIO"
-    ZONA_REV="$DIR_ZONA/db.$(echo $REDE | tr '.' '-')"
 
-    # Backup
-    cp "$CONF_LOCAL" "$CONF_LOCAL.bkp.$(date +%s)"
-
-    # Configura as zonas no named.conf.local
-    echo "zone \"$DOMINIO\" {
-    type master;
-    file \"$ZONA_DIR\";
-};" >> "$CONF_LOCAL"
-
-    echo "zone \"$ZONA_REVERSE\" {
-    type master;
-    file \"$ZONA_REV\";
-};" >> "$CONF_LOCAL"
-
-    # ========== Cria arquivo da zona direta ==========
-    cat <<EOF > "$ZONA_DIR"
+    # Se arquivo da zona não existe, cria base
+    if [ ! -f "$ZONA_DIR" ]; then
+        cat <<EOF | sudo tee "$ZONA_DIR" > /dev/null
 \$TTL    604800
 @       IN      SOA     ns.$DOMINIO. root.$DOMINIO. (
-                             $(date +%Y%m%d)01 ; Serial
+                             2         ; Serial
                         604800         ; Refresh
                          86400         ; Retry
                        2419200         ; Expire
@@ -83,12 +95,37 @@ configurar_dns() {
 @       IN      NS      ns.$DOMINIO.
 ns      IN      A       $(hostname -I | awk '{print $1}')
 EOF
+    fi
 
-    # ========== Cria arquivo da zona reversa ==========
-    cat <<EOF > "$ZONA_REV"
+    # Verifica se a zona já está no named.conf.local e adiciona se não estiver
+    if ! grep -q "zone \"$DOMINIO\"" "$CONF_LOCAL"; then
+        echo "zone \"$DOMINIO\" {
+    type master;
+    file \"$ZONA_DIR\";
+};" | sudo tee -a "$CONF_LOCAL" > /dev/null
+    fi
+
+    dialog --msgbox "Zona direta configurada para $DOMINIO" 6 50
+}
+
+# Função para configurar zona reversa
+configurar_zona_reversa() {
+    local REDE_NOVA=""
+    REDE_NOVA=$(dialog --stdout --inputbox "Digite o IP da rede para a Zona Reversa (ex: 192.168.1):" 8 50 "$REDE")
+    [ -z "$REDE_NOVA" ] && return
+
+    REDE="$REDE_NOVA"
+    echo "$REDE" > "$ARQ_REDE"
+
+    ZONA_REVERSE=$(echo $REDE | awk -F. '{print $3"."$2"."$1".in-addr.arpa"}')
+    ZONA_REV="$DIR_ZONA/db.$(echo $REDE | tr '.' '-')"
+
+    # Se arquivo da zona reversa não existe, cria base
+    if [ ! -f "$ZONA_REV" ]; then
+        cat <<EOF | sudo tee "$ZONA_REV" > /dev/null
 \$TTL    604800
 @       IN      SOA     ns.$DOMINIO. root.$DOMINIO. (
-                             $(date +%Y%m%d)01 ; Serial
+                             2         ; Serial
                         604800         ; Refresh
                          86400         ; Retry
                        2419200         ; Expire
@@ -96,61 +133,107 @@ EOF
 ;
 @       IN      NS      ns.$DOMINIO.
 EOF
+    fi
 
-    # ========== Loop para adicionar registros ==========
+    # Verifica se a zona reversa está no named.conf.local e adiciona se não estiver
+    if ! grep -q "zone \"$ZONA_REVERSE\"" "$CONF_LOCAL"; then
+        echo "zone \"$ZONA_REVERSE\" {
+    type master;
+    file \"$ZONA_REV\";
+};" | sudo tee -a "$CONF_LOCAL" > /dev/null
+    fi
+
+    dialog --msgbox "Zona reversa configurada para $ZONA_REVERSE" 6 60
+}
+
+# Função para adicionar registros DNS
+adicionar_registros_dns() {
+    if [ -z "$DOMINIO" ] || [ -z "$REDE" ]; then
+        dialog --msgbox "⚠️ Configure antes a zona direta e reversa!" 7 50
+        return
+    fi
+
+    ZONA_DIR="$DIR_ZONA/db.$DOMINIO"
+    ZONA_REV="$DIR_ZONA/db.$(echo $REDE | tr '.' '-')"
+
     while true; do
-        OPCAO=$(dialog --stdout --menu "🗂️ Adicione registros DNS para $DOMINIO" 15 60 6 \
-        1 "Adicionar Registro A" \
-        2 "Adicionar CNAME (Alias)" \
-        3 "Adicionar MX (E-mail)" \
-        4 "Finalizar e aplicar" \
-        0 "Sair sem aplicar")
+        OPCAO=$(dialog --stdout --menu "Adicione registros DNS" 15 60 6 \
+            1 "Adicionar Registro A" \
+            2 "Adicionar CNAME (Alias)" \
+            3 "Adicionar MX (E-mail)" \
+            4 "Finalizar" \
+            0 "Voltar")
 
         case $OPCAO in
             1)
-                HOST=$(dialog --stdout --inputbox "Nome do host (ex: www):" 8 50)
+                HOST=$(dialog --stdout --inputbox "Nome do host (ex: www, ftp, apache):" 8 50)
+                [ -z "$HOST" ] && continue
                 IP=$(dialog --stdout --inputbox "IP do host:" 8 50)
-                echo "$HOST    IN      A       $IP" >> "$ZONA_DIR"
+                [ -z "$IP" ] && continue
 
+                echo "$HOST    IN      A       $IP" | sudo tee -a "$ZONA_DIR" > /dev/null
+
+                # Atualiza zona reversa
                 ULT_OCT=$(echo $IP | awk -F. '{print $4}')
-                echo "$ULT_OCT    IN      PTR     $HOST.$DOMINIO." >> "$ZONA_REV"
-                ;;
+                echo "$ULT_OCT    IN      PTR     $HOST.$DOMINIO." | sudo tee -a "$ZONA_REV" > /dev/null
 
+                dialog --msgbox "Registro A adicionado." 5 40
+                ;;
             2)
                 ALIAS=$(dialog --stdout --inputbox "Nome do Alias (ex: app):" 8 50)
-                ALVO=$(dialog --stdout --inputbox "Aponta para (ex: www):" 8 50)
-                echo "$ALIAS    IN      CNAME    $ALVO.$DOMINIO." >> "$ZONA_DIR"
-                ;;
+                [ -z "$ALIAS" ] && continue
+                ALVO=$(dialog --stdout --inputbox "Host alvo do alias (ex: www):" 8 50)
+                [ -z "$ALVO" ] && continue
 
+                echo "$ALIAS    IN      CNAME    $ALVO.$DOMINIO." | sudo tee -a "$ZONA_DIR" > /dev/null
+                dialog --msgbox "Registro CNAME adicionado." 5 40
+                ;;
             3)
                 MXHOST=$(dialog --stdout --inputbox "Hostname do servidor de e-mail (ex: mail):" 8 50)
+                [ -z "$MXHOST" ] && continue
                 PRIORIDADE=$(dialog --stdout --inputbox "Prioridade do MX (ex: 10):" 8 50)
-                echo "@    IN      MX      $PRIORIDADE    $MXHOST.$DOMINIO." >> "$ZONA_DIR"
-                ;;
+                [ -z "$PRIORIDADE" ] && continue
 
+                echo "@    IN      MX      $PRIORIDADE    $MXHOST.$DOMINIO." | sudo tee -a "$ZONA_DIR" > /dev/null
+                dialog --msgbox "Registro MX adicionado." 5 40
+                ;;
             4)
                 break
                 ;;
-
             0)
-                dialog --msgbox "❌ Cancelado. Nenhuma alteração aplicada." 6 50
-                exit
+                break
+                ;;
+            *)
+                dialog --msgbox "Opção inválida!" 5 40
                 ;;
         esac
     done
 
-    # ========== Verifica e aplica ==========
-    named-checkconf
-    named-checkzone "$DOMINIO" "$ZONA_DIR"
-    named-checkzone "$ZONA_REVERSE" "$ZONA_REV"
+    # Verifica sintaxe
+    sudo named-checkconf
+    sudo named-checkzone "$DOMINIO" "$ZONA_DIR"
+    sudo named-checkzone "$ZONA_REVERSE" "$ZONA_REV"
 
-    systemctl restart bind9
-
-    dialog --msgbox "✅ DNS Configurado para $DOMINIO e serviço BIND9 reiniciado com sucesso!" 7 60
+    # Reinicia bind9
+    sudo systemctl restart bind9
+    dialog --msgbox "✅ Registros aplicados e Bind9 reiniciado!" 6 50
 }
 
-# ========== Executa ==========
-configurar_dns
+# Menu principal do DNS
+while true; do
+    OPCAO=$(dialog --stdout --menu "🛠️ Menu Master DNS" 15 60 6 \
+        1 "Configurar options (named.conf.options)" \
+        2 "Configurar zona direta (atual: ${DOMINIO:-nenhuma})" \
+        3 "Configurar zona reversa (atual: ${ZONA_REVERSE:-nenhuma})" \
+        4 "Adicionar registros DNS" \
+        0 "Sair")
 
-clear
-echo "✅ Script DNS finalizado com sucesso!"
+    case $OPCAO in
+        1) ajustar_named_conf_options ;;
+        2) configurar_zona_direta ;;
+        3) configurar_zona_reversa ;;
+        4) adicionar_registros_dns ;;
+        0) clear; exit ;;
+        *) dialog --msgbox "Opção inválida!" 5 40 ;;
+    esac
+done
