@@ -1,7 +1,9 @@
 #!/bin/bash
 
 # Script DNS Interativo com dialog e configuração completa
+# Correções aplicadas: verificação bind9, progresso real na instalação, ajustes resolv.conf
 
+# Verifica e instala dialog se necessário
 if ! command -v dialog &>/dev/null; then
     apt-get update -qq
     apt-get install -y dialog >/dev/null 2>&1
@@ -58,7 +60,7 @@ EOF
 cria_zona_reversa() {
     local zona_rev=$(echo $REDE | tr '.' '-')
     local ip_srv=$(hostname -I | awk '{print $1}')
-    local ult_octeto=$(echo $ip_srv | awk -F. '{print $4}')
+    local ult_oct=$(echo "$ip_srv" | awk -F. '{print $4}')
     sudo bash -c "cat > $DIR_ZONA/db.$zona_rev" <<EOF
 \$TTL    604800
 @       IN      SOA     $DOMINIO. root.$DOMINIO. (
@@ -69,7 +71,7 @@ cria_zona_reversa() {
                          604800 )       ; Negative Cache TTL
 ;
 @       IN      NS      $DOMINIO.
-$ult_octeto       IN      PTR     $DOMINIO.
+$ult_oct       IN      PTR     $DOMINIO.
 EOF
 }
 
@@ -119,13 +121,16 @@ configura_resolv_conf() {
                 NS_IP=$(dialog --stdout --inputbox "Digite o IP do nameserver:" 8 50)
                 [ -z "$NS_IP" ] && continue
 
+                # Se resolv.conf não existir, cria
                 [ ! -f /etc/resolv.conf ] && sudo touch /etc/resolv.conf
 
-                echo "nameserver $NS_IP" | sudo tee -a /etc/resolv.conf >/dev/null
+                # Adiciona nameserver ao arquivo, se não existir
+                grep -q "nameserver $NS_IP" /etc/resolv.conf || echo "nameserver $NS_IP" | sudo tee -a /etc/resolv.conf >/dev/null
 
                 dialog --msgbox "Nameserver $NS_IP adicionado." 6 50
                 ;;
             2)
+                # Lista nameservers existentes
                 MAP_NS=$(grep "^nameserver" /etc/resolv.conf 2>/dev/null)
 
                 if [ -z "$MAP_NS" ]; then
@@ -141,7 +146,6 @@ configura_resolv_conf() {
                 done <<< "$MAP_NS"
 
                 SEL=$(dialog --stdout --menu "Escolha nameserver para remover:" 12 50 "${#OPTIONS[@]}" "${OPTIONS[@]}")
-
                 [ -z "$SEL" ] && continue
 
                 REMOVE_LINE=$(echo "$MAP_NS" | sed -n "${SEL}p")
@@ -155,7 +159,7 @@ configura_resolv_conf() {
 }
 
 verifica_bind_instalado() {
-    dpkg -l | grep -q '^ii.*bind9'
+    dpkg-query -W -f='${Status}' bind9 2>/dev/null | grep -q "install ok installed"
 }
 
 instalar_bind() {
