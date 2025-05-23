@@ -1,8 +1,8 @@
 #!/bin/bash
 
-# ===========================
-# MENU MASTER DE SERVIÇOS
-# ===========================
+# =======================================
+# MENU MASTER DE SERVIÇOS BY JOAQUIM DO OF
+# =======================================
 
 # Verifica se é root
 if [ "$EUID" -ne 0 ]; then
