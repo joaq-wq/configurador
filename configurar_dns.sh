@@ -2,10 +2,14 @@
 
 # Script DNS Interativo com dialog e configuração completa
 
-# Verifica se dialog está instalado
 if ! command -v dialog &> /dev/null; then
     echo "Instalando dialog..."
     apt update && apt install -y dialog
+fi
+
+if ! dpkg -s bind9 &> /dev/null; then
+    echo "Instalando bind9..."
+    apt update && apt install -y bind9 bind9utils bind9-doc
 fi
 
 CONF_LOCAL="/etc/bind/named.conf.local"
