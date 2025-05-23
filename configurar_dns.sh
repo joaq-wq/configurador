@@ -1,42 +1,33 @@
 #!/bin/bash
 
-# Script DNS Interativo com dialog e configuração completa
-
-# Verificar se dialog está instalado
-if ! command -v dialog &> /dev/null; then
-    echo "Instalando dialog..."
-    apt update -qq
-    apt install -y dialog
+# ========== Verificar se o usuário é root ==========
+if [ "$EUID" -ne 0 ]; then
+    echo "Execute este script como root ou usando sudo."
+    exit 1
 fi
 
-# Variáveis
+# ========== Verificar se dialog está instalado ==========
+if ! command -v dialog &> /dev/null; then
+    echo "Instalando dialog..."
+    apt update && apt install -y dialog
+fi
+
+# ========== Caminhos ==========
 CONF_LOCAL="/etc/bind/named.conf.local"
 CONF_OPTIONS="/etc/bind/named.conf.options"
 DIR_ZONA="/etc/bind"
-
 ARQ_DOMINIO="/tmp/dns_zona_direta.txt"
 ARQ_REDE="/tmp/dns_zona_reversa.txt"
 
-# Carrega dados salvos, se houver
+# Carrega domínio e rede (se existirem)
 DOMINIO=$( [ -f "$ARQ_DOMINIO" ] && cat "$ARQ_DOMINIO" || echo "" )
 REDE=$( [ -f "$ARQ_REDE" ] && cat "$ARQ_REDE" || echo "" )
 
-# Função para calcular zona reversa
-calc_zona_reversa() {
-    echo "$REDE" | awk -F. '{print $3"."$2"."$1".in-addr.arpa"}'
-}
+# ========== Função para instalar o BIND9 com barra de progresso ==========
+instalar_bind() {
+    apt-get update -qq
 
-# Instalar BIND9 com barra de progresso dinâmica
-instalar_bind9() {
-    if dpkg -l | grep -qw bind9; then
-        dialog --msgbox "✅ BIND9 já está instalado." 6 40
-        return
-    fi
-
-    apt update -qq
-
-    (
-    apt install -y bind9 bind9utils bind9-doc > /tmp/bind_install.log 2>&1 &
+    (apt-get install -y bind9 bind9utils bind9-doc > /tmp/bind_install.log 2>&1) &
     PID=$!
 
     {
@@ -48,23 +39,36 @@ instalar_bind9() {
             done
         done
         echo 100
-    } | dialog --gauge "📦 Instalando BIND9 DNS Server..." 10 60 0
+    } | dialog --gauge "Instalando BIND9 DNS Server..." 10 60 0
 
     wait $PID
     RET=$?
 
     if [ $RET -eq 0 ]; then
-        dialog --msgbox "✅ BIND9 instalado com sucesso!" 6 50
+        dialog --msgbox "BIND9 instalado com sucesso!" 6 50
     else
-        dialog --msgbox "❌ Erro na instalação. Veja /tmp/bind_install.log" 8 60
+        dialog --msgbox "Erro na instalação. Veja /tmp/bind_install.log" 8 60
         exit 1
     fi
-    )
 }
 
-# Atualizar named.conf.local
+# ========== Verificar se está instalado ==========
+verifica_bind() {
+    if dpkg-query -W -f='${Status}' bind9 2>/dev/null | grep -q "install ok installed"; then
+        return 0
+    else
+        return 1
+    fi
+}
+
+# ========== Calcula zona reversa ==========
+calc_zona_reversa() {
+    echo "$REDE" | awk -F. '{print $3"."$2"."$1".in-addr.arpa"}'
+}
+
+# ========== Atualiza named.conf.local ==========
 atualiza_named_conf_local() {
-    sudo bash -c "cat > $CONF_LOCAL" <<EOF
+    cat > "$CONF_LOCAL" <<EOF
 // Arquivo gerado automaticamente
 
 zone "$DOMINIO" {
@@ -79,10 +83,10 @@ zone "$(calc_zona_reversa)" {
 EOF
 }
 
-# Criar zona direta
+# ========== Cria zona direta ==========
 cria_zona_direta() {
     local ip_srv=$(hostname -I | awk '{print $1}')
-    sudo bash -c "cat > $DIR_ZONA/db.$DOMINIO" <<EOF
+    cat > "$DIR_ZONA/db.$DOMINIO" <<EOF
 \$TTL    604800
 @       IN      SOA     $DOMINIO. root.$DOMINIO. (
                               2         ; Serial
@@ -98,12 +102,12 @@ ftp     IN      A       $ip_srv
 EOF
 }
 
-# Criar zona reversa
+# ========== Cria zona reversa ==========
 cria_zona_reversa() {
     local zona_rev=$(echo $REDE | tr '.' '-')
     local ip_srv=$(hostname -I | awk '{print $1}')
-    local ultimo_octeto=$(echo $ip_srv | awk -F. '{print $4}')
-    sudo bash -c "cat > $DIR_ZONA/db.$zona_rev" <<EOF
+    local ultimo_octeto=$(echo "$ip_srv" | awk -F. '{print $4}')
+    cat > "$DIR_ZONA/db.$zona_rev" <<EOF
 \$TTL    604800
 @       IN      SOA     $DOMINIO. root.$DOMINIO. (
                               2         ; Serial
@@ -117,14 +121,14 @@ $ultimo_octeto       IN      PTR     $DOMINIO.
 EOF
 }
 
-# Configurar named.conf.options
+# ========== Configura named.conf.options ==========
 configura_named_conf_options() {
     IP_SERVIDOR=$(dialog --stdout --inputbox "Digite o IP do servidor DNS (ex: 192.168.0.1):" 8 50)
     [ -z "$IP_SERVIDOR" ] && return
     REDE_LOCAL=$(dialog --stdout --inputbox "Digite a rede local (ex: 192.168.0.0/24):" 8 50)
     [ -z "$REDE_LOCAL" ] && return
 
-    sudo bash -c "cat > $CONF_OPTIONS" <<EOF
+    cat > "$CONF_OPTIONS" <<EOF
 options {
     directory "/var/cache/bind";
 
@@ -140,116 +144,105 @@ options {
     };
 
     dnssec-validation auto;
-
     auth-nxdomain no;
     listen-on-v6 { any; };
 };
 EOF
 
     dialog --msgbox "Arquivo named.conf.options atualizado." 6 50
-    sudo systemctl restart bind9
+    systemctl restart bind9
 }
 
-# Menu para editar resolv.conf
-editar_resolv_conf() {
+# ========== Gerenciar /etc/resolv.conf ==========
+gerenciar_resolv_conf() {
     while true; do
-        OPCAO=$(dialog --stdout --menu "📝 Editar resolv.conf" 15 60 5 \
-            1 "Adicionar entrada" \
-            2 "Remover entrada" \
+        OP=$(dialog --stdout --menu "Gerenciar resolv.conf" 15 60 4 \
+            1 "Adicionar DNS" \
+            2 "Remover DNS" \
             0 "Voltar")
 
-        case $OPCAO in
+        case $OP in
             1)
-                DOM=$(dialog --stdout --inputbox "Informe o domínio (ex: grau.local):" 8 50)
-                IP=$(dialog --stdout --inputbox "Informe o IP (ex: 192.168.0.1):" 8 50)
-                echo "nameserver $IP" | sudo tee -a /etc/resolv.conf > /dev/null
-                echo "search $DOM" | sudo tee -a /etc/resolv.conf > /dev/null
-                dialog --msgbox "Entrada adicionada!" 6 40
+                DOM=$(dialog --stdout --inputbox "Digite o domínio:" 8 40)
+                IP=$(dialog --stdout --inputbox "Digite o IP:" 8 40)
+                echo "nameserver $IP" >> /etc/resolv.conf
+                echo "search $DOM" >> /etc/resolv.conf
+                dialog --msgbox "Adicionado $IP ($DOM) ao resolv.conf" 6 50
                 ;;
             2)
-                TEMP="/tmp/resolv_temp"
-                sudo cp /etc/resolv.conf $TEMP
-                LINHAS=$(grep -nE "nameserver|search" $TEMP | awk -F: '{print $1 " " $2}')
+                LINHAS=$(grep -n "nameserver\|search" /etc/resolv.conf | awk -F: '{print $1 " " $2}')
                 if [ -z "$LINHAS" ]; then
                     dialog --msgbox "Nenhuma entrada encontrada." 6 40
                 else
-                    ESCOLHA=$(echo "$LINHAS" | dialog --stdout --menu "Escolha linha para remover" 20 60 10)
-                    if [ -n "$ESCOLHA" ]; then
-                        sed -i "${ESCOLHA}d" $TEMP
-                        sudo cp $TEMP /etc/resolv.conf
-                        dialog --msgbox "Linha removida." 6 40
-                    fi
+                    LINHA=$(echo "$LINHAS" | dialog --stdout --menu "Selecione para remover:" 20 60 10 $(echo "$LINHAS"))
+                    [ -z "$LINHA" ] || sed -i "${LINHA}d" /etc/resolv.conf
+                    dialog --msgbox "Entrada removida." 6 40
                 fi
                 ;;
-            0) return ;;
+            0) break ;;
         esac
     done
 }
 
-# Configuração completa do DNS
-configurar_dns() {
-    while true; do
-        OPCAO=$(dialog --stdout --menu "📡 Configuração DNS" 15 60 6 \
-            1 "Configurar Zona Direta (atual: ${DOMINIO:-nenhuma})" \
-            2 "Configurar Zona Reversa (atual: ${REDE:-nenhuma})" \
-            3 "Configurar named.conf.options" \
-            4 "Editar resolv.conf (Adicionar/Remover)" \
-            5 "Aplicar configurações e reiniciar BIND" \
-            0 "Voltar")
-
-        case $OPCAO in
-            1)
-                DOM=$(dialog --stdout --inputbox "Informe o nome da zona direta (ex: grau.local):" 8 50 "$DOMINIO")
-                [ -z "$DOM" ] && continue
-                DOMINIO="$DOM"
-                echo "$DOMINIO" > "$ARQ_DOMINIO"
-                cria_zona_direta
-                atualiza_named_conf_local
-                dialog --msgbox "Zona direta configurada para $DOMINIO" 6 50
-                ;;
-            2)
-                REDE_NOVA=$(dialog --stdout --inputbox "Informe os 3 primeiros octetos da rede (ex: 192.168.0):" 8 50 "$REDE")
-                [ -z "$REDE_NOVA" ] && continue
-                REDE="$REDE_NOVA"
-                echo "$REDE" > "$ARQ_REDE"
-                cria_zona_reversa
-                atualiza_named_conf_local
-                dialog --msgbox "Zona reversa configurada para $(calc_zona_reversa)" 6 60
-                ;;
-            3)
-                configura_named_conf_options
-                ;;
-            4)
-                editar_resolv_conf
-                ;;
-            5)
-                sudo systemctl restart bind9
-                dialog --msgbox "Configurações aplicadas e BIND reiniciado!" 6 50
-                ;;
-            0)
-                break
-                ;;
-        esac
-    done
-}
-
-# Menu principal
+# ========== Menu principal ==========
 while true; do
-    OPCAO=$(dialog --stdout --menu "🛠️ Menu Principal" 15 60 5 \
+    OPCAO=$(dialog --stdout --menu "📡 Gerenciador DNS" 15 60 6 \
         1 "Instalar DNS (BIND9)" \
         2 "Configurar DNS" \
+        3 "Gerenciar resolv.conf" \
         0 "Sair")
 
     case $OPCAO in
         1)
-            instalar_bind9
+            if verifica_bind; then
+                dialog --msgbox "BIND9 já está instalado." 6 50
+            else
+                instalar_bind
+            fi
             ;;
         2)
-            configurar_dns
+            while true; do
+                DOMINIO_ATUAL=${DOMINIO:-"nenhuma"}
+                REDE_ATUAL=${REDE:-"nenhuma"}
+
+                SUB_OPCAO=$(dialog --stdout --menu "⚙️ Configuração DNS" 15 60 5 \
+                    1 "Configurar Zona Direta (atual: $DOMINIO_ATUAL)" \
+                    2 "Configurar Zona Reversa (atual: $REDE_ATUAL)" \
+                    3 "Configurar named.conf.options" \
+                    4 "Aplicar e Reiniciar DNS" \
+                    0 "Voltar")
+
+                case $SUB_OPCAO in
+                    1)
+                        DOMINIO_NOVO=$(dialog --stdout --inputbox "Informe o nome da zona direta (ex: exemplo.local):" 8 50 "$DOMINIO")
+                        [ -z "$DOMINIO_NOVO" ] && continue
+                        DOMINIO="$DOMINIO_NOVO"
+                        echo "$DOMINIO" > "$ARQ_DOMINIO"
+                        cria_zona_direta
+                        atualiza_named_conf_local
+                        dialog --msgbox "Zona direta configurada para $DOMINIO" 6 50
+                        ;;
+                    2)
+                        REDE_NOVA=$(dialog --stdout --inputbox "Informe os 3 primeiros octetos da rede (ex: 192.168.0):" 8 50 "$REDE")
+                        [ -z "$REDE_NOVA" ] && continue
+                        REDE="$REDE_NOVA"
+                        echo "$REDE" > "$ARQ_REDE"
+                        cria_zona_reversa
+                        atualiza_named_conf_local
+                        dialog --msgbox "Zona reversa configurada para $(calc_zona_reversa)" 6 60
+                        ;;
+                    3)
+                        configura_named_conf_options
+                        ;;
+                    4)
+                        systemctl restart bind9
+                        dialog --msgbox "BIND9 reiniciado com sucesso!" 6 50
+                        ;;
+                    0) break ;;
+                esac
+            done
             ;;
-        0)
-            clear
-            exit
-            ;;
+        3) gerenciar_resolv_conf ;;
+        0) clear; exit ;;
     esac
 done
