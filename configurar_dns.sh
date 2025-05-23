@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Script DNS Interativo com dialog e configuração completa
+# Script DNS Interativo com dialog, configuração completa e instalação com progresso real
 
 # Verifica se dialog está instalado
 if ! command -v dialog &> /dev/null; then
@@ -80,35 +80,6 @@ cria_zona_reversa() {
 EOF
 }
 
-# Instalação do BIND9 com barra de progresso funcional igual SSH
-instalar_dns() {
-    apt-get update -qq && apt-get install -y bind9 bind9utils bind9-doc >/tmp/dns_install.log 2>&1 &
-    PID=$!
-
-    (
-        for i in $(seq 0 100); do
-            echo $i
-            sleep 0.03
-        done
-
-        # Após chegar em 100%, espera o processo terminar
-        while kill -0 $PID 2>/dev/null; do
-            echo 100
-            sleep 0.1
-        done
-
-        echo 100
-    ) | dialog --title "Instalando BIND9" --gauge "Aguarde, instalando o DNS..." 10 70 0
-
-    wait $PID
-    if [ $? -eq 0 ]; then
-        dialog --msgbox "BIND9 instalado com sucesso!" 6 50
-    else
-        dialog --msgbox "Erro na instalação. Veja /tmp/dns_install.log" 8 60
-        exit 1
-    fi
-}
-
 # Configura named.conf.options com IP e rede
 configura_named_conf_options() {
     IP_SERVIDOR=$(dialog --stdout --inputbox "Digite o IP do servidor DNS (ex: 192.168.0.1):" 8 50)
@@ -118,7 +89,7 @@ configura_named_conf_options() {
 
     sudo bash -c "cat > $CONF_OPTIONS" <<EOF
 options {
-    directory \"/var/cache/bind\";
+    directory "/var/cache/bind";
 
     recursion yes;
     allow-recursion { 127.0.0.1; $REDE_LOCAL; };
@@ -152,13 +123,45 @@ EOF
     dialog --msgbox "/etc/resolv.conf configurado para usar $IP_SERVIDOR" 6 50
 }
 
+# Instalação do BIND9 com barra de progresso dinâmica real (baseada no tamanho do log)
+instalar_dns() {
+    LOG="/tmp/dns_install.log"
+    > "$LOG"
+
+    apt-get update -qq
+    apt-get install -y bind9 bind9utils bind9-doc >"$LOG" 2>&1 &
+    PID=$!
+
+    MAX_LINHAS=200  # ajuste a estimativa do tamanho do log para 100%
+
+    (
+    while kill -0 $PID 2>/dev/null; do
+        LINHAS_ATUAIS=$(wc -l < "$LOG")
+        PERC=$(( LINHAS_ATUAIS * 100 / MAX_LINHAS ))
+        if [ $PERC -gt 100 ]; then PERC=99; fi
+        echo $PERC
+        sleep 0.1
+    done
+
+    echo 100
+    ) | dialog --title "Instalando BIND9" --gauge "Aguarde, instalando o DNS..." 10 70 0
+
+    wait $PID
+    if [ $? -eq 0 ]; then
+        dialog --msgbox "BIND9 instalado com sucesso!" 6 50
+    else
+        dialog --msgbox "Erro na instalação. Veja $LOG" 8 60
+        exit 1
+    fi
+}
+
 # Menu principal
 while true; do
     DOMINIO_ATUAL=${DOMINIO:-"nenhuma"}
     REDE_ATUAL=${REDE:-"nenhuma"}
 
     OPCAO=$(dialog --stdout --menu "📡 Configuração DNS" 15 60 6 \
-        1 "Instalar BIND9 (DNS)" \
+        1 "Instalar BIND9 DNS Server" \
         2 "Configurar Zona Direta (atual: $DOMINIO_ATUAL)" \
         3 "Configurar Zona Reversa (atual: $REDE_ATUAL)" \
         4 "Configurar named.conf.options" \
