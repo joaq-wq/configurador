@@ -6,6 +6,37 @@ if [ "$EUID" -ne 0 ]; then
     exit 1
 fi
 
+instalar_ssh() {
+    # Atualiza lista de pacotes (sem mostrar saída)
+    apt-get update -qq
+
+    # Executa a instalação do openssh-server em background e captura o PID
+    apt-get install -y openssh-server > /tmp/ssh_install.log 2>&1 &
+    PID=$!
+
+    # Função para mostrar a barra de progresso animada enquanto o apt instala
+    {
+        while kill -0 $PID 2>/dev/null; do
+            for i in $(seq 0 100); do
+                echo $i
+                sleep 0.05
+                # Se o processo terminou, sai do loop
+                kill -0 $PID 2>/dev/null || break
+            done
+        done
+        echo 100
+    } | dialog --gauge "Instalando OpenSSH Server..." 10 60 0
+
+    wait $PID
+    RET=$?
+
+    if [ $RET -eq 0 ]; then
+        dialog --msgbox "OpenSSH Server instalado com sucesso!" 6 40
+    else
+        dialog --msgbox "Erro na instalação do OpenSSH Server. Veja /tmp/ssh_install.log" 8 60
+    fi
+}
+
 # Garante usuário sshd
 if ! id sshd &>/dev/null; then
     echo "Criando usuário sshd..."
