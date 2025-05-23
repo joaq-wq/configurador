@@ -20,31 +20,6 @@ ARQ_REDE="/tmp/dns_zona_reversa.txt"
 DOMINIO=$( [ -f "$ARQ_DOMINIO" ] && cat "$ARQ_DOMINIO" || echo "" )
 REDE=$( [ -f "$ARQ_REDE" ] && cat "$ARQ_REDE" || echo "" )
 
-# Função para instalar BIND9 com barra de progresso funcional
-instalar_dns() {
-    apt-get update -qq && apt-get install -y bind9 bind9utils bind9-doc >/tmp/dns_install.log 2>&1 &
-    PID=$!
-
-    {
-        while kill -0 $PID 2>/dev/null; do
-            for i in $(seq 0 100); do
-                echo $i
-                sleep 0.03
-                kill -0 $PID 2>/dev/null || break
-            done
-        done
-        echo 100
-    } | dialog --title "Instalando BIND9" --gauge "Aguarde, instalando o DNS..." 10 70 0
-
-    wait $PID
-    if [ $? -eq 0 ]; then
-        dialog --msgbox "BIND9 instalado com sucesso!" 6 50
-    else
-        dialog --msgbox "Erro na instalação. Veja /tmp/dns_install.log" 8 60
-        exit 1
-    fi
-}
-
 # Calcula zona reversa padrão a partir da rede
 calc_zona_reversa() {
     # espera rede no formato 192.168.0 (3 octetos)
@@ -105,6 +80,35 @@ cria_zona_reversa() {
 EOF
 }
 
+# Instalação do BIND9 com barra de progresso funcional igual SSH
+instalar_dns() {
+    apt-get update -qq && apt-get install -y bind9 bind9utils bind9-doc >/tmp/dns_install.log 2>&1 &
+    PID=$!
+
+    (
+        for i in $(seq 0 100); do
+            echo $i
+            sleep 0.03
+        done
+
+        # Após chegar em 100%, espera o processo terminar
+        while kill -0 $PID 2>/dev/null; do
+            echo 100
+            sleep 0.1
+        done
+
+        echo 100
+    ) | dialog --title "Instalando BIND9" --gauge "Aguarde, instalando o DNS..." 10 70 0
+
+    wait $PID
+    if [ $? -eq 0 ]; then
+        dialog --msgbox "BIND9 instalado com sucesso!" 6 50
+    else
+        dialog --msgbox "Erro na instalação. Veja /tmp/dns_install.log" 8 60
+        exit 1
+    fi
+}
+
 # Configura named.conf.options com IP e rede
 configura_named_conf_options() {
     IP_SERVIDOR=$(dialog --stdout --inputbox "Digite o IP do servidor DNS (ex: 192.168.0.1):" 8 50)
@@ -154,7 +158,7 @@ while true; do
     REDE_ATUAL=${REDE:-"nenhuma"}
 
     OPCAO=$(dialog --stdout --menu "📡 Configuração DNS" 15 60 6 \
-        1 "Instalar BIND9" \
+        1 "Instalar BIND9 (DNS)" \
         2 "Configurar Zona Direta (atual: $DOMINIO_ATUAL)" \
         3 "Configurar Zona Reversa (atual: $REDE_ATUAL)" \
         4 "Configurar named.conf.options" \
