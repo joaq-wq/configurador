@@ -1,104 +1,138 @@
 #!/bin/bash
 
-# Precisa ser root
-if [ "$EUID" -ne 0 ]; then 
-  dialog --msgbox "❌ Este script precisa ser executado como ROOT.\nUse: sudo bash $0" 8 50
-  clear
-  exit 1
+# Verificar root
+if [ "$EUID" -ne 0 ]; then
+    echo "Execute este script como root ou com sudo."
+    exit 1
 fi
 
-CONFIG="/etc/ssh/sshd_config"
-BACKUP="/etc/ssh/sshd_config.bkp.$(date +%F-%H-%M-%S)"
-
-# Instala openssh-server e dialog se precisar
-if ! dpkg -l | grep -q openssh-server || ! command -v dialog &>/dev/null; then
-    (
-    echo 10; echo "Atualizando pacotes..."; sleep 1
-    apt update -y &>/dev/null
-    echo 50; echo "Instalando OpenSSH e Dialog..."; sleep 1
-    apt install -y openssh-server dialog &>/dev/null
-    echo 100; echo "Finalizando instalação..." ; sleep 1
-    ) | dialog --gauge "⏳ Preparando ambiente..." 10 60 0
+# Garante usuário sshd
+if ! id sshd &>/dev/null; then
+    echo "Criando usuário sshd..."
+    useradd -r -s /usr/sbin/nologin sshd
 fi
 
-cp $CONFIG $BACKUP
+# Função reiniciar ssh com checagem
+reiniciar_ssh() {
+    if sshd -t 2>/tmp/sshd_err.log; then
+        systemctl restart ssh.service
+        dialog --msgbox "SSH reiniciado com sucesso!" 6 40
+    else
+        dialog --msgbox "Erro na configuração SSH:\n$(cat /tmp/sshd_err.log)" 10 50
+    fi
+    rm -f /tmp/sshd_err.log
+}
+
+# Função para pegar valor atual ou padrão
+get_ssh_conf_value() {
+    grep -i "^$1" /etc/ssh/sshd_config | awk '{print $2}' | tail -n 1
+}
 
 while true; do
-
-    PORTA_ATUAL=$(grep ^Port $CONFIG | awk '{print $2}' || echo "22")
-    ROOT_ATUAL=$(grep ^PermitRootLogin $CONFIG | awk '{print $2}' || echo "prohibit-password")
-    PASSWD_AUTH=$(grep ^PasswordAuthentication $CONFIG | awk '{print $2}' || echo "yes")
-    PUBKEY_AUTH=$(grep ^PubkeyAuthentication $CONFIG | awk '{print $2}' || echo "yes")
-
-    OPCOES=$(dialog --stdout --checklist "Configurar SSH (ESPACO para selecionar, Cancelar para VOLTAR)" 20 70 10 \
-    1 "Alterar Porta (Atual: $PORTA_ATUAL)" off \
-    2 "Permitir Root Login (Atual: $ROOT_ATUAL)" off \
-    3 "Ativar/Desativar Senha (Atual: $PASSWD_AUTH)" off \
-    4 "Ativar/Desativar Chave Pública (Atual: $PUBKEY_AUTH)" off \
-    5 "Ativar Log Verboso (/var/log/auth.log)" off)
+    OPCAO=$(dialog --stdout --menu "⚙️ Configurar SSH" 20 70 7 \
+        1 "Alterar porta SSH" \
+        2 "Permitir login root" \
+        3 "Ativar/desativar senha (PasswordAuthentication)" \
+        4 "Ativar/desativar autenticação por chave pública" \
+        5 "Ativar/desativar log verboso" \
+        6 "Reiniciar SSH" \
+        0 "Voltar")
 
     RET=$?
     if [ $RET -ne 0 ]; then
-        # Cancelar volta para menu principal
-        clear
         break
     fi
 
-    OPCOES=$(echo $OPCOES | tr -d '"')
-
-    if [[ -z "$OPCOES" ]]; then
-        dialog --yesno "Nenhuma opção selecionada.\n\nDeseja voltar ao menu principal?" 8 50
-        if [ $? -eq 0 ]; then
-            clear
+    case $OPCAO in
+        1)
+            PORTA_ATUAL=$(get_ssh_conf_value Port)
+            [ -z "$PORTA_ATUAL" ] && PORTA_ATUAL="22"
+            PORTA_NOVA=$(dialog --stdout --inputbox "Porta atual: $PORTA_ATUAL\nDigite a nova porta (1-65535):" 8 50 "$PORTA_ATUAL")
+            if [ $? -eq 0 ] && [[ "$PORTA_NOVA" =~ ^[0-9]+$ ]] && [ "$PORTA_NOVA" -ge 1 ] && [ "$PORTA_NOVA" -le 65535 ]; then
+                sed -i '/^Port /d' /etc/ssh/sshd_config
+                echo "Port $PORTA_NOVA" >> /etc/ssh/sshd_config
+                dialog --msgbox "Porta SSH alterada para $PORTA_NOVA." 6 40
+            else
+                dialog --msgbox "Porta inválida ou operação cancelada." 6 40
+            fi
+            ;;
+        2)
+            ROOT_ATUAL=$(get_ssh_conf_value PermitRootLogin)
+            [ -z "$ROOT_ATUAL" ] && ROOT_ATUAL="no"
+            ROOT_OPCAO=$(dialog --stdout --menu "PermitRootLogin está '$ROOT_ATUAL'. Escolha:" 10 40 2 \
+                1 "yes" \
+                2 "no")
+            if [ $? -eq 0 ]; then
+                NOVO_VALOR="no"
+                [ "$ROOT_OPCAO" == "1" ] && NOVO_VALOR="yes"
+                sed -i '/^PermitRootLogin /d' /etc/ssh/sshd_config
+                echo "PermitRootLogin $NOVO_VALOR" >> /etc/ssh/sshd_config
+                dialog --msgbox "PermitRootLogin alterado para $NOVO_VALOR." 6 40
+            else
+                dialog --msgbox "Operação cancelada." 6 40
+            fi
+            ;;
+        3)
+            PASS_ATUAL=$(get_ssh_conf_value PasswordAuthentication)
+            [ -z "$PASS_ATUAL" ] && PASS_ATUAL="yes"
+            PASS_OPCAO=$(dialog --stdout --menu "PasswordAuthentication está '$PASS_ATUAL'. Escolha:" 10 40 2 \
+                1 "yes" \
+                2 "no")
+            if [ $? -eq 0 ]; then
+                NOVO_VALOR="no"
+                [ "$PASS_OPCAO" == "1" ] && NOVO_VALOR="yes"
+                sed -i '/^PasswordAuthentication /d' /etc/ssh/sshd_config
+                echo "PasswordAuthentication $NOVO_VALOR" >> /etc/ssh/sshd_config
+                dialog --msgbox "PasswordAuthentication alterado para $NOVO_VALOR." 6 40
+            else
+                dialog --msgbox "Operação cancelada." 6 40
+            fi
+            ;;
+        4)
+            PUBKEY_ATUAL=$(get_ssh_conf_value PubkeyAuthentication)
+            [ -z "$PUBKEY_ATUAL" ] && PUBKEY_ATUAL="yes"
+            PUBKEY_OPCAO=$(dialog --stdout --menu "PubkeyAuthentication está '$PUBKEY_ATUAL'. Escolha:" 10 40 2 \
+                1 "yes" \
+                2 "no")
+            if [ $? -eq 0 ]; then
+                NOVO_VALOR="no"
+                [ "$PUBKEY_OPCAO" == "1" ] && NOVO_VALOR="yes"
+                sed -i '/^PubkeyAuthentication /d' /etc/ssh/sshd_config
+                echo "PubkeyAuthentication $NOVO_VALOR" >> /etc/ssh/sshd_config
+                dialog --msgbox "PubkeyAuthentication alterado para $NOVO_VALOR." 6 40
+            else
+                dialog --msgbox "Operação cancelada." 6 40
+            fi
+            ;;
+        5)
+            LOG_ATUAL=$(get_ssh_conf_value LogLevel)
+            [ "$LOG_ATUAL" == "" ] && LOG_ATUAL="INFO"
+            LOG_OPCAO=$(dialog --stdout --menu "LogLevel atual: $LOG_ATUAL. Escolha:" 10 40 3 \
+                1 "INFO (padrão)" \
+                2 "VERBOSE" \
+                3 "QUIET")
+            if [ $? -eq 0 ]; then
+                case $LOG_OPCAO in
+                    1) NOVO_LOG="INFO" ;;
+                    2) NOVO_LOG="VERBOSE" ;;
+                    3) NOVO_LOG="QUIET" ;;
+                    *) NOVO_LOG="INFO" ;;
+                esac
+                sed -i '/^LogLevel /d' /etc/ssh/sshd_config
+                echo "LogLevel $NOVO_LOG" >> /etc/ssh/sshd_config
+                dialog --msgbox "LogLevel alterado para $NOVO_LOG." 6 40
+            else
+                dialog --msgbox "Operação cancelada." 6 40
+            fi
+            ;;
+        6)
+            reiniciar_ssh
+            ;;
+        0)
             break
-        else
-            continue
-        fi
-    fi
-
-    for opcao in $OPCOES; do
-        case $opcao in
-            1)
-                PORTA=$(dialog --stdout --inputbox "Digite a nova porta SSH (Atual: $PORTA_ATUAL):" 8 40 "$PORTA_ATUAL")
-                if [[ ! "$PORTA" =~ ^[0-9]+$ ]]; then
-                    dialog --msgbox "❌ Porta inválida. Deve ser um número." 6 40
-                else
-                    sed -i "/^Port /d" $CONFIG
-                    echo "Port $PORTA" >> $CONFIG
-                fi
-                ;;
-            2)
-                ROOT=$(dialog --stdout --menu "Permitir root login?" 10 40 4 \
-                yes "Permitir" \
-                no "Negar" \
-                prohibit-password "Apenas chave pública" \
-                without-password "Sem senha")
-                sed -i "/^PermitRootLogin /d" $CONFIG
-                echo "PermitRootLogin $ROOT" >> $CONFIG
-                ;;
-            3)
-                PASSWD=$(dialog --stdout --menu "Permitir autenticação por senha?" 10 40 2 \
-                yes "Sim" no "Não")
-                sed -i "/^PasswordAuthentication /d" $CONFIG
-                echo "PasswordAuthentication $PASSWD" >> $CONFIG
-                ;;
-            4)
-                PUBKEY=$(dialog --stdout --menu "Permitir autenticação por chave pública?" 10 40 2 \
-                yes "Sim" no "Não")
-                sed -i "/^PubkeyAuthentication /d" $CONFIG
-                echo "PubkeyAuthentication $PUBKEY" >> $CONFIG
-                ;;
-            5)
-                sed -i '/^LogLevel/d' $CONFIG
-                echo "LogLevel VERBOSE" >> $CONFIG
-                ;;
-        esac
-    done
-
-    systemctl restart ssh
-
-    dialog --msgbox "✅ SSH configurado com sucesso!\n\nBackup em:\n$BACKUP" 8 50
-
+            ;;
+        *)
+            dialog --msgbox "Opção inválida!" 6 40
+            ;;
+    esac
 done
-
-clear
