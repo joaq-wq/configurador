@@ -1,20 +1,35 @@
-
 #!/bin/bash
 
 # =============================
 # Script Master de DNS - by Joaquimkj
 # =============================
 
-# Verifica se o dialog está instalado
+# Verifica se está rodando como root
+if [ "$EUID" -ne 0 ]; then
+    echo "❌ Este script precisa ser executado como root."
+    exit 1
+fi
+
+# Verifica e instala o dialog com barra de progresso
 if ! command -v dialog &> /dev/null; then
-    echo "Instalando dialog..."
-    apt update && apt install -y dialog
+    (
+    echo 20; echo "🔄 Atualizando pacotes..."; sleep 1
+    apt update -y &>/dev/null
+    echo 60; echo "⬇️ Instalando Dialog..."; sleep 1
+    apt install -y dialog &>/dev/null
+    echo 100; echo "✅ Concluído..."; sleep 1
+    ) | dialog --gauge "⏳ Instalando dependências..." 10 60 0
 fi
 
 # Instala Bind9 se não tiver
 if ! dpkg -l | grep -q bind9; then
-    dialog --title "Instalação do DNS" --msgbox "O Bind9 não está instalado. Instalando agora..." 7 50
-    apt update && apt install -y bind9 bind9utils bind9-doc
+    (
+    echo 20; echo "🔄 Atualizando pacotes..."; sleep 1
+    apt update -y &>/dev/null
+    echo 60; echo "⬇️ Instalando Bind9..."; sleep 1
+    apt install -y bind9 bind9utils bind9-doc &>/dev/null
+    echo 100; echo "✅ Concluído..."; sleep 1
+    ) | dialog --gauge "⏳ Instalando o servidor DNS (Bind9)..." 10 60 0
 fi
 
 # Caminhos dos arquivos
@@ -34,9 +49,12 @@ configurar_dns() {
 
     ZONA_REVERSE=$(echo $REDE | awk -F. '{print $3"."$2"."$1".in-addr.arpa"}')
 
-    # Cria arquivos de zona
+    # Arquivos de zona
     ZONA_DIR="$DIR_ZONA/db.$DOMINIO"
     ZONA_REV="$DIR_ZONA/db.$(echo $REDE | tr '.' '-')"
+
+    # Backup dos arquivos
+    cp $CONF_LOCAL $CONF_LOCAL.bkp.$(date +%s)
 
     # Adiciona as zonas no named.conf.local
     echo "zone \"$DOMINIO\" {
@@ -53,7 +71,7 @@ configurar_dns() {
     cat <<EOF > $ZONA_DIR
 \$TTL    604800
 @       IN      SOA     ns.$DOMINIO. root.$DOMINIO. (
-                             2         ; Serial
+                             $(date +%Y%m%d)01 ; Serial
                         604800         ; Refresh
                          86400         ; Retry
                        2419200         ; Expire
@@ -67,7 +85,7 @@ EOF
     cat <<EOF > $ZONA_REV
 \$TTL    604800
 @       IN      SOA     ns.$DOMINIO. root.$DOMINIO. (
-                             2         ; Serial
+                             $(date +%Y%m%d)01 ; Serial
                         604800         ; Refresh
                          86400         ; Retry
                        2419200         ; Expire
@@ -78,7 +96,7 @@ EOF
 
     # Loop para adicionar registros
     while true; do
-        OPCAO=$(dialog --stdout --menu "Adicione registros DNS" 15 60 6 \
+        OPCAO=$(dialog --stdout --menu "🗂️ Adicione registros DNS para $DOMINIO" 15 60 6 \
         1 "Adicionar Registro A" \
         2 "Adicionar CNAME (Alias)" \
         3 "Adicionar MX (E-mail)" \
@@ -113,6 +131,7 @@ EOF
                 ;;
 
             0)
+                dialog --msgbox "❌ Cancelado. Nenhuma alteração aplicada." 6 50
                 exit
                 ;;
         esac
@@ -126,11 +145,11 @@ EOF
     # Reinicia serviço
     systemctl restart bind9
 
-    dialog --msgbox "✅ DNS Configurado e serviço BIND9 reiniciado com sucesso!" 7 60
+    dialog --msgbox "✅ DNS Configurado para $DOMINIO e serviço BIND9 reiniciado com sucesso!" 7 60
 }
 
 # Executa função
 configurar_dns
 
 clear
-echo "Script DNS finalizado com sucesso!"
+echo "✅ Script DNS finalizado com sucesso!"
