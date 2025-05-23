@@ -1,29 +1,49 @@
 #!/bin/bash
 
-# Verificar root
+# Verificar se é root
 if [ "$EUID" -ne 0 ]; then
     echo "Execute este script como root ou com sudo."
     exit 1
 fi
 
+# -------- Função para instalar OpenSSH com barra de progresso real --------
 instalar_ssh() {
     apt-get update -qq
 
-    apt-get install -y openssh-server > /tmp/ssh_install.log 2>&1 &
-    PID=$!
+    mkfifo /tmp/apt_progress_pipe
+    trap "rm -f /tmp/apt_progress_pipe" EXIT
 
-    {
-        while kill -0 $PID 2>/dev/null; do
-            for i in $(seq 0 100); do
-                echo $i
-                sleep 0.05
-                kill -0 $PID 2>/dev/null || break
-            done
+    apt-get install -y openssh-server 2>/tmp/ssh_install.log &
+    APT_PID=$!
+
+    (
+        SPIN='-\|/'
+        i=0
+        PROGRESS=0
+
+        while kill -0 $APT_PID 2>/dev/null; do
+            # Usa o número de linhas do log como estimativa de progresso
+            if [ -f /tmp/ssh_install.log ]; then
+                LINE_COUNT=$(wc -l < /tmp/ssh_install.log)
+                PROGRESS=$((LINE_COUNT * 3))  # Ajuste de multiplicador
+
+                if [ $PROGRESS -gt 95 ]; then
+                    PROGRESS=95
+                fi
+            fi
+
+            i=$(( (i + 1) % 4 ))
+            echo "$PROGRESS"
+            echo "Instalando OpenSSH Server... ${SPIN:$i:1}"
+            sleep 0.2
         done
-        echo 100
-    } | dialog --gauge "Instalando OpenSSH Server..." 10 60 0
 
-    wait $PID
+        # Finaliza com 100%
+        echo "100"
+        echo "Finalizando instalação..."
+    ) | dialog --gauge "Preparando instalação..." 10 60 0
+
+    wait $APT_PID
     RET=$?
 
     if [ $RET -eq 0 ]; then
@@ -34,14 +54,14 @@ instalar_ssh() {
     fi
 }
 
-# Função garantir usuário sshd (se não existir)
+# -------- Função garantir usuário sshd --------
 garantir_usuario_sshd() {
     if ! id sshd &>/dev/null; then
         useradd -r -s /usr/sbin/nologin sshd
     fi
 }
 
-# Reiniciar SSH
+# -------- Reiniciar SSH --------
 reiniciar_ssh() {
     if sshd -t 2>/tmp/sshd_err.log; then
         systemctl restart ssh.service
@@ -52,14 +72,13 @@ reiniciar_ssh() {
     rm -f /tmp/sshd_err.log
 }
 
-# Pega valores atuais do sshd_config
+# -------- Pega valores do sshd_config --------
 get_ssh_conf_value() {
     grep -i "^$1" /etc/ssh/sshd_config | awk '{print $2}' | tail -n 1
 }
 
-# -------- Menu principal ---------
+# -------- Menu principal --------
 while true; do
-
     OPCAO=$(dialog --stdout --menu "Menu Principal" 15 60 5 \
         1 "Instalar OpenSSH Server" \
         2 "Configurar SSH" \
