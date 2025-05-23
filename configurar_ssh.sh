@@ -1,130 +1,85 @@
-
 #!/bin/bash
 
 # =============================
-# Script Master de SSH - by Joaquimkj
+# Script SSH Master Interativo
 # =============================
 
-# Verifica se o dialog está instalado
-if ! command -v dialog &> /dev/null; then
-    echo "Instalando dialog..."
-    apt update && apt install -y dialog
+# 🚀 Verifica e instala SSH + Dialog com barra
+if ! dpkg -l | grep -q openssh-server || ! command -v dialog &>/dev/null; then
+    (
+    echo 10; echo "Atualizando pacotes..."; sleep 1
+    apt update -y &>/dev/null
+    echo 50; echo "Instalando OpenSSH..."; sleep 1
+    apt install -y openssh-server dialog &>/dev/null
+    echo 100; echo "Finalizando instalação..."; sleep 1
+    ) | dialog --gauge "⏳ Preparando ambiente..." 10 60 0
 fi
 
-# Função para configurar SSH
-configurar_ssh() {
-    # Verifica se o OpenSSH está instalado
-    if ! dpkg -l | grep -q openssh-server; then
-        dialog --title "Instalação do SSH" --msgbox "O OpenSSH não está instalado. Instalando agora..." 7 50
-        apt update && apt install -y openssh-server
-    fi
+CONFIG="/etc/ssh/sshd_config"
+BACKUP="$CONFIG.bkp.$(date +%F-%H-%M-%S)"
+cp $CONFIG $BACKUP
 
-    CONFIG="/etc/ssh/sshd_config"
+# 🎯 Captura configs atuais
+PORTA_ATUAL=$(grep ^Port $CONFIG | awk '{print $2}' || echo "22")
+ROOT_ATUAL=$(grep ^PermitRootLogin $CONFIG | awk '{print $2}' || echo "prohibit-password")
+PASSWD_AUTH=$(grep ^PasswordAuthentication $CONFIG | awk '{print $2}' || echo "yes")
+PUBKEY_AUTH=$(grep ^PubkeyAuthentication $CONFIG | awk '{print $2}' || echo "yes")
 
-    # Backup
-    cp $CONFIG ${CONFIG}.bkp.$(date +%F-%H-%M-%S)
+# 🗒️ Menu Checklist com as opções
+OPCOES=$(dialog --stdout --checklist "🛠️ Selecione o que deseja configurar no SSH:" 20 70 10 \
+1 "Alterar Porta (Atual: $PORTA_ATUAL)" off \
+2 "Permitir Root Login (Atual: $ROOT_ATUAL)" off \
+3 "Ativar/Desativar Senha (Atual: $PASSWD_AUTH)" off \
+4 "Ativar/Desativar Chave Pública (Atual: $PUBKEY_AUTH)" off \
+5 "Ativar Log Verboso (/var/log/auth.log)" off)
 
-    # Coleta informações atuais
-    PORTA_ATUAL=$(grep ^Port $CONFIG | awk '{print $2}')
-    [ -z "$PORTA_ATUAL" ] && PORTA_ATUAL="22"
+[ $? -ne 0 ] && clear && exit
 
-    ROOT_ATUAL=$(grep ^PermitRootLogin $CONFIG | awk '{print $2}')
-    [ -z "$ROOT_ATUAL" ] && ROOT_ATUAL="prohibit-password"
+# 🧠 Processa cada opção
+for opcao in $OPCOES; do
+    case $opcao in
 
-    PASSWD_AUTH=$(grep ^PasswordAuthentication $CONFIG | awk '{print $2}')
-    [ -z "$PASSWD_AUTH" ] && PASSWD_AUTH="yes"
+    \"1\")
+        PORTA=$(dialog --stdout --inputbox "Digite a nova porta SSH (Atual: $PORTA_ATUAL):" 8 40 "$PORTA_ATUAL")
+        sed -i "/^Port /d" $CONFIG
+        echo "Port $PORTA" >> $CONFIG
+        ;;
 
-    PUBKEY_AUTH=$(grep ^PubkeyAuthentication $CONFIG | awk '{print $2}')
-    [ -z "$PUBKEY_AUTH" ] && PUBKEY_AUTH="yes"
+    \"2\")
+        ROOT=$(dialog --stdout --menu "Permitir root login?" 10 40 4 \
+        yes "Permitir" \
+        no "Negar" \
+        prohibit-password "Apenas chave pública" \
+        without-password "Sem senha")
+        sed -i "/^PermitRootLogin /d" $CONFIG
+        echo "PermitRootLogin $ROOT" >> $CONFIG
+        ;;
 
-    ALLOW_USERS=$(grep ^AllowUsers $CONFIG | cut -d' ' -f2-)
-    LOGIN_GRACE=$(grep ^LoginGraceTime $CONFIG | awk '{print $2}')
-    [ -z "$LOGIN_GRACE" ] && LOGIN_GRACE="120"
+    \"3\")
+        PASSWD=$(dialog --stdout --menu "Permitir autenticação por senha?" 10 40 2 \
+        yes "Sim" no "Não")
+        sed -i "/^PasswordAuthentication /d" $CONFIG
+        echo "PasswordAuthentication $PASSWD" >> $CONFIG
+        ;;
 
-    MAX_AUTH_TRIES=$(grep ^MaxAuthTries $CONFIG | awk '{print $2}')
-    [ -z "$MAX_AUTH_TRIES" ] && MAX_AUTH_TRIES="6"
+    \"4\")
+        PUBKEY=$(dialog --stdout --menu "Permitir autenticação por chave pública?" 10 40 2 \
+        yes "Sim" no "Não")
+        sed -i "/^PubkeyAuthentication /d" $CONFIG
+        echo "PubkeyAuthentication $PUBKEY" >> $CONFIG
+        ;;
 
-    BANNER=$(grep ^Banner $CONFIG | awk '{print $2}')
-    [ -z "$BANNER" ] && BANNER="none"
+    \"5\")
+        sed -i '/^LogLevel/d' $CONFIG
+        echo "LogLevel VERBOSE" >> $CONFIG
+        ;;
 
-    # Menu checklist
-    OPCOES=$(dialog --stdout --checklist "🛠️ Selecione as opções para configurar o SSH:" 20 70 10 \
-    1 "Alterar Porta (Atual: $PORTA_ATUAL)" off \
-    2 "Permitir Login Root (Atual: $ROOT_ATUAL)" off \
-    3 "Permitir Autenticação por Senha (Atual: $PASSWD_AUTH)" off \
-    4 "Permitir Autenticação por Chave Pública (Atual: $PUBKEY_AUTH)" off \
-    5 "Definir Usuários Permitidos (AllowUsers)" off \
-    6 "Definir Tempo Limite de Login (LoginGraceTime: $LOGIN_GRACE)" off \
-    7 "Definir Máximo de Tentativas (MaxAuthTries: $MAX_AUTH_TRIES)" off \
-    8 "Definir Banner de Aviso (Atual: $BANNER)" off \
-    9 "Ver Configuração Atual" off)
+    esac
+done
 
-    [ $? -ne 0 ] && return
+# 🚀 Reinicia o SSH
+systemctl restart ssh
 
-    for opcao in $OPCOES; do
-        case $opcao in
-            \"1\")
-                PORTA=$(dialog --stdout --inputbox "Digite a nova porta SSH:" 8 40 "$PORTA_ATUAL")
-                sed -i "/^Port /d" $CONFIG
-                echo "Port $PORTA" >> $CONFIG
-                ;;
-            \"2\")
-                ROOT=$(dialog --stdout --menu "Permitir login root?" 10 40 4 \
-                yes "Permitir" \
-                no "Negar" \
-                prohibit-password "Proibir senha (somente chave)" \
-                without-password "Apenas chave pública")
-                sed -i "/^PermitRootLogin /d" $CONFIG
-                echo "PermitRootLogin $ROOT" >> $CONFIG
-                ;;
-            \"3\")
-                PASSWD=$(dialog --stdout --menu "Permitir autenticação por senha?" 10 40 2 \
-                yes "Permitir" no "Negar")
-                sed -i "/^PasswordAuthentication /d" $CONFIG
-                echo "PasswordAuthentication $PASSWD" >> $CONFIG
-                ;;
-            \"4\")
-                PUBKEY=$(dialog --stdout --menu "Permitir autenticação por chave pública?" 10 40 2 \
-                yes "Permitir" no "Negar")
-                sed -i "/^PubkeyAuthentication /d" $CONFIG
-                echo "PubkeyAuthentication $PUBKEY" >> $CONFIG
-                ;;
-            \"5\")
-                USERS=$(dialog --stdout --inputbox "Digite os usuários permitidos separados por espaço:" 8 50 "$ALLOW_USERS")
-                sed -i "/^AllowUsers /d" $CONFIG
-                echo "AllowUsers $USERS" >> $CONFIG
-                ;;
-            \"6\")
-                GRACE=$(dialog --stdout --inputbox "Tempo limite de login (em segundos, ex: 120):" 8 50 "$LOGIN_GRACE")
-                sed -i "/^LoginGraceTime /d" $CONFIG
-                echo "LoginGraceTime $GRACE" >> $CONFIG
-                ;;
-            \"7\")
-                MAXTRIES=$(dialog --stdout --inputbox "Número máximo de tentativas de login:" 8 50 "$MAX_AUTH_TRIES")
-                sed -i "/^MaxAuthTries /d" $CONFIG
-                echo "MaxAuthTries $MAXTRIES" >> $CONFIG
-                ;;
-            \"8\")
-                BANNER_PATH=$(dialog --stdout --inputbox "Digite o caminho do arquivo de banner ou 'none':" 8 60 "$BANNER")
-                sed -i "/^Banner /d" $CONFIG
-                echo "Banner $BANNER_PATH" >> $CONFIG
-                if [ "$BANNER_PATH" != "none" ]; then
-                    dialog --stdout --editbox $BANNER_PATH 20 70 || echo "Atenção: Crie ou edite manualmente o arquivo $BANNER_PATH"
-                fi
-                ;;
-            \"9\")
-                dialog --msgbox "🔍 Configuração atual:\n\nPorta: $PORTA_ATUAL\nRoot: $ROOT_ATUAL\nSenha: $PASSWD_AUTH\nChave Pública: $PUBKEY_AUTH\nAllowUsers: $ALLOW_USERS\nLoginGraceTime: $LOGIN_GRACE\nMaxAuthTries: $MAX_AUTH_TRIES\nBanner: $BANNER" 20 70
-                ;;
-        esac
-    done
-
-    # Reinicia o serviço SSH
-    systemctl restart ssh
-    dialog --msgbox "✅ Configurações aplicadas e serviço SSH reiniciado com sucesso!" 7 60
-}
-
-# Executa a função
-configurar_ssh
+dialog --msgbox "✅ SSH Configurado com sucesso!\n\nBackup salvo em: $BACKUP" 8 50
 
 clear
-echo "Script SSH finalizado com sucesso!"
