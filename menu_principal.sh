@@ -22,7 +22,7 @@ if ! command -v dialog &> /dev/null; then
 fi
 
 while true; do
-    OPCAO=$(dialog --stdout --menu "🛠️ MENU MASTER DE CONFIGURAÇÃO" 20 70 9 \
+    OPCAO=$(dialog --stdout --menu "🛠️ MENU MASTER DE CONFIGURAÇÃO BY JOAQUIM DO OF" 20 70 9 \
     1 "Configurar SSH" \
     2 "Configurar DNS" \
     3 "Configurar FTP" \
