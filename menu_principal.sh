@@ -21,14 +21,14 @@ while true; do
     0 "Sair")
 
     case $OPCAO in
-        1) bash configura_ssh.sh ;;   # Script do SSH
-        2) bash configura_dns.sh ;;   # Script do DNS
-        3) bash configura_dhcp.sh ;;  # Script do DHCP
-        4) bash configura_ftp.sh ;;   # Script do FTP
-        5) bash configura_proxy.sh ;; # Script do Proxy
-        6) bash configura_firewall.sh ;; # Script do Firewall
-        7) bash configura_sql.sh ;;   # Script do SQL
-        8) bash configura_telnet.sh ;;# Script do Telnet
+        1) bash configurar_ssh.sh ;;   # Script do SSH
+        2) bash configurar_dns.sh ;;   # Script do DNS
+        3) bash configurar_dhcp.sh ;;  # Script do DHCP
+        4) bash configurar_ftp.sh ;;   # Script do FTP
+        5) bash configurar_proxy.sh ;; # Script do Proxy
+        6) bash configurar_firewall.sh ;; # Script do Firewall
+        7) bash configurar_sql.sh ;;   # Script do SQL
+        8) bash configurar_telnet.sh ;;# Script do Telnet
         0) clear; exit ;;             # Sair do programa
     esac
 done
