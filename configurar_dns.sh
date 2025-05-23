@@ -1,10 +1,7 @@
 #!/bin/bash
 
 # Script DNS Interativo com dialog e configuração completa
-# Instalação bind9 com barra de progresso dinâmica refletindo progresso real
-# Configuração das zonas, named.conf e resolv.conf interativo
 
-# Verifica e instala dialog se necessário (sem saída no terminal)
 if ! command -v dialog &>/dev/null; then
     apt-get update -qq
     apt-get install -y dialog >/dev/null 2>&1
@@ -61,6 +58,7 @@ EOF
 cria_zona_reversa() {
     local zona_rev=$(echo $REDE | tr '.' '-')
     local ip_srv=$(hostname -I | awk '{print $1}')
+    local ult_octeto=$(echo $ip_srv | awk -F. '{print $4}')
     sudo bash -c "cat > $DIR_ZONA/db.$zona_rev" <<EOF
 \$TTL    604800
 @       IN      SOA     $DOMINIO. root.$DOMINIO. (
@@ -71,7 +69,7 @@ cria_zona_reversa() {
                          604800 )       ; Negative Cache TTL
 ;
 @       IN      NS      $DOMINIO.
-1       IN      PTR     $DOMINIO.
+$ult_octeto       IN      PTR     $DOMINIO.
 EOF
 }
 
@@ -83,7 +81,7 @@ configura_named_conf_options() {
 
     sudo bash -c "cat > $CONF_OPTIONS" <<EOF
 options {
-    directory \"/var/cache/bind\";
+    directory "/var/cache/bind";
 
     recursion yes;
     allow-recursion { 127.0.0.1; $REDE_LOCAL; };
@@ -118,32 +116,23 @@ configura_resolv_conf() {
 
         case $RESOLV_OPC in
             1)
-                NOME_DOMINIO=$(dialog --stdout --inputbox "Digite o domínio de busca:" 8 50)
-                [ -z "$NOME_DOMINIO" ] && continue
                 NS_IP=$(dialog --stdout --inputbox "Digite o IP do nameserver:" 8 50)
                 [ -z "$NS_IP" ] && continue
 
-                # Se resolv.conf não existir, cria
                 [ ! -f /etc/resolv.conf ] && sudo touch /etc/resolv.conf
 
-                # Adiciona linha nameserver e search no arquivo, se não existir
-                sudo sed -i "/^search /d" /etc/resolv.conf
-                echo "search $NOME_DOMINIO" | sudo tee -a /etc/resolv.conf >/dev/null
                 echo "nameserver $NS_IP" | sudo tee -a /etc/resolv.conf >/dev/null
 
-                dialog --msgbox "Nameserver $NS_IP para domínio $NOME_DOMINIO adicionado." 6 50
+                dialog --msgbox "Nameserver $NS_IP adicionado." 6 50
                 ;;
             2)
-                # Lista nameservers existentes
                 MAP_NS=$(grep "^nameserver" /etc/resolv.conf 2>/dev/null)
-                MAP_SEARCH=$(grep "^search" /etc/resolv.conf 2>/dev/null)
 
                 if [ -z "$MAP_NS" ]; then
                     dialog --msgbox "Nenhum nameserver encontrado em /etc/resolv.conf" 6 50
                     continue
                 fi
 
-                # Cria menu para remover
                 OPTIONS=()
                 i=1
                 while read -r line; do
@@ -152,9 +141,9 @@ configura_resolv_conf() {
                 done <<< "$MAP_NS"
 
                 SEL=$(dialog --stdout --menu "Escolha nameserver para remover:" 12 50 "${#OPTIONS[@]}" "${OPTIONS[@]}")
+
                 [ -z "$SEL" ] && continue
 
-                # Remove a linha selecionada do resolv.conf
                 REMOVE_LINE=$(echo "$MAP_NS" | sed -n "${SEL}p")
                 sudo sed -i "\|$REMOVE_LINE|d" /etc/resolv.conf
 
@@ -166,28 +155,24 @@ configura_resolv_conf() {
 }
 
 verifica_bind_instalado() {
-    dpkg-query -W -f='${Status}' bind9 2>/dev/null | grep -q "install ok installed"
+    dpkg -l | grep -q '^ii.*bind9'
 }
 
 instalar_bind() {
+    if verifica_bind_instalado; then
+        dialog --msgbox "BIND9 já está instalado." 6 50
+        return
+    fi
+
     TMP_LOG="/tmp/bind_install.log"
     rm -f "$TMP_LOG"
 
-    DEBIAN_FRONTEND=noninteractive apt-get update -qq
-    DEBIAN_FRONTEND=noninteractive apt-get install -y bind9 bind9utils bind9-doc >"$TMP_LOG" 2>&1 &
-    PID=$!
+    (
+    apt-get update -qq
+    apt-get install -y bind9 bind9utils bind9-doc >>"$TMP_LOG" 2>&1
+    ) | dialog --gauge "Instalando BIND9..." 10 70 0
 
-    while kill -0 $PID 2>/dev/null; do
-        LINES=$(wc -l < "$TMP_LOG")
-        PERCENT=$(( LINES > 100 ? 100 : LINES ))
-        echo $PERCENT
-        sleep 0.2
-    done
-    echo 100
-    wait $PID
-    RET=$?
-
-    if [ $RET -eq 0 ]; then
+    if verifica_bind_instalado; then
         dialog --msgbox "BIND9 instalado com sucesso!" 6 50
     else
         dialog --msgbox "Erro na instalação. Veja $TMP_LOG" 8 60
