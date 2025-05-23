@@ -29,12 +29,28 @@ get_ssh_conf_value() {
 }
 
 while true; do
-    OPCAO=$(dialog --stdout --menu "⚙️ Configurar SSH" 20 70 7 \
-        1 "Alterar porta SSH" \
-        2 "Permitir login root" \
-        3 "Ativar/desativar senha (PasswordAuthentication)" \
-        4 "Ativar/desativar autenticação por chave pública" \
-        5 "Ativar/desativar log verboso" \
+    # Pega valores atuais ou usa padrão
+    PORTA_ATUAL=$(get_ssh_conf_value Port)
+    [ -z "$PORTA_ATUAL" ] && PORTA_ATUAL="22"
+
+    ROOT_ATUAL=$(get_ssh_conf_value PermitRootLogin)
+    [ -z "$ROOT_ATUAL" ] && ROOT_ATUAL="no"
+
+    PASS_ATUAL=$(get_ssh_conf_value PasswordAuthentication)
+    [ -z "$PASS_ATUAL" ] && PASS_ATUAL="yes"
+
+    PUBKEY_ATUAL=$(get_ssh_conf_value PubkeyAuthentication)
+    [ -z "$PUBKEY_ATUAL" ] && PUBKEY_ATUAL="yes"
+
+    LOG_ATUAL=$(get_ssh_conf_value LogLevel)
+    [ -z "$LOG_ATUAL" ] && LOG_ATUAL="INFO"
+
+    OPCAO=$(dialog --stdout --menu "⚙️ Configurar SSH - Valores atuais entre parênteses" 22 80 7 \
+        1 "Alterar porta SSH (atual $PORTA_ATUAL)" \
+        2 "Permitir login root (atual $ROOT_ATUAL)" \
+        3 "Ativar/desativar senha (PasswordAuthentication) (atual $PASS_ATUAL)" \
+        4 "Ativar/desativar autenticação por chave pública (atual $PUBKEY_ATUAL)" \
+        5 "Ativar/desativar log verboso (atual $LOG_ATUAL)" \
         6 "Reiniciar SSH" \
         0 "Voltar")
 
@@ -45,8 +61,6 @@ while true; do
 
     case $OPCAO in
         1)
-            PORTA_ATUAL=$(get_ssh_conf_value Port)
-            [ -z "$PORTA_ATUAL" ] && PORTA_ATUAL="22"
             PORTA_NOVA=$(dialog --stdout --inputbox "Porta atual: $PORTA_ATUAL\nDigite a nova porta (1-65535):" 8 50 "$PORTA_ATUAL")
             if [ $? -eq 0 ] && [[ "$PORTA_NOVA" =~ ^[0-9]+$ ]] && [ "$PORTA_NOVA" -ge 1 ] && [ "$PORTA_NOVA" -le 65535 ]; then
                 sed -i '/^Port /d' /etc/ssh/sshd_config
@@ -57,8 +71,6 @@ while true; do
             fi
             ;;
         2)
-            ROOT_ATUAL=$(get_ssh_conf_value PermitRootLogin)
-            [ -z "$ROOT_ATUAL" ] && ROOT_ATUAL="no"
             ROOT_OPCAO=$(dialog --stdout --menu "PermitRootLogin está '$ROOT_ATUAL'. Escolha:" 10 40 2 \
                 1 "yes" \
                 2 "no")
@@ -73,8 +85,6 @@ while true; do
             fi
             ;;
         3)
-            PASS_ATUAL=$(get_ssh_conf_value PasswordAuthentication)
-            [ -z "$PASS_ATUAL" ] && PASS_ATUAL="yes"
             PASS_OPCAO=$(dialog --stdout --menu "PasswordAuthentication está '$PASS_ATUAL'. Escolha:" 10 40 2 \
                 1 "yes" \
                 2 "no")
@@ -89,8 +99,6 @@ while true; do
             fi
             ;;
         4)
-            PUBKEY_ATUAL=$(get_ssh_conf_value PubkeyAuthentication)
-            [ -z "$PUBKEY_ATUAL" ] && PUBKEY_ATUAL="yes"
             PUBKEY_OPCAO=$(dialog --stdout --menu "PubkeyAuthentication está '$PUBKEY_ATUAL'. Escolha:" 10 40 2 \
                 1 "yes" \
                 2 "no")
@@ -105,8 +113,6 @@ while true; do
             fi
             ;;
         5)
-            LOG_ATUAL=$(get_ssh_conf_value LogLevel)
-            [ "$LOG_ATUAL" == "" ] && LOG_ATUAL="INFO"
             LOG_OPCAO=$(dialog --stdout --menu "LogLevel atual: $LOG_ATUAL. Escolha:" 10 40 3 \
                 1 "INFO (padrão)" \
                 2 "VERBOSE" \
