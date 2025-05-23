@@ -1,49 +1,54 @@
 #!/bin/bash
 
-# Verificar se é root
+# Verificar root
 if [ "$EUID" -ne 0 ]; then
     echo "Execute este script como root ou com sudo."
     exit 1
 fi
 
-# -------- Função para instalar OpenSSH com barra de progresso real --------
+# -------- Função para instalar OpenSSH com progresso e animação --------
 instalar_ssh() {
     apt-get update -qq
 
-    mkfifo /tmp/apt_progress_pipe
-    trap "rm -f /tmp/apt_progress_pipe" EXIT
+    rm -f /tmp/ssh_install.log
 
     apt-get install -y openssh-server 2>/tmp/ssh_install.log &
-    APT_PID=$!
+    PID=$!
 
     (
         SPIN='-\|/'
         i=0
         PROGRESS=0
 
-        while kill -0 $APT_PID 2>/dev/null; do
-            # Usa o número de linhas do log como estimativa de progresso
+        while kill -0 $PID 2>/dev/null; do
             if [ -f /tmp/ssh_install.log ]; then
                 LINE_COUNT=$(wc -l < /tmp/ssh_install.log)
-                PROGRESS=$((LINE_COUNT * 3))  # Ajuste de multiplicador
+                TARGET_PROGRESS=$((LINE_COUNT * 3))
+                [ $TARGET_PROGRESS -gt 95 ] && TARGET_PROGRESS=95
+            else
+                TARGET_PROGRESS=5
+            fi
 
-                if [ $PROGRESS -gt 95 ]; then
-                    PROGRESS=95
-                fi
+            if [ $PROGRESS -lt $TARGET_PROGRESS ]; then
+                PROGRESS=$((PROGRESS + 1))
             fi
 
             i=$(( (i + 1) % 4 ))
             echo "$PROGRESS"
             echo "Instalando OpenSSH Server... ${SPIN:$i:1}"
-            sleep 0.2
+            sleep 0.1
         done
 
-        # Finaliza com 100%
-        echo "100"
-        echo "Finalizando instalação..."
+        while [ $PROGRESS -lt 100 ]; do
+            PROGRESS=$((PROGRESS + 1))
+            echo "$PROGRESS"
+            echo "Finalizando instalação..."
+            sleep 0.05
+        done
+
     ) | dialog --gauge "Preparando instalação..." 10 60 0
 
-    wait $APT_PID
+    wait $PID
     RET=$?
 
     if [ $RET -eq 0 ]; then
