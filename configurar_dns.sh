@@ -11,7 +11,7 @@ fi
 # Verificar se dialog está instalado
 if ! command -v dialog &> /dev/null; then
     echo "Instalando dialog..."
-    apt update && apt install -y dialog
+    apt update && apt install dialog
 fi
 
 # Variáveis
