@@ -1,8 +1,8 @@
 #!/bin/bash
 
-# Script DNS Interativo com instalação e configuração completa
+# Script DNS Interativo com dialog e configuração completa
 
-# Verificar se dialog está instalado
+# Verifica se dialog está instalado
 if ! command -v dialog &> /dev/null; then
     echo "Instalando dialog..."
     apt update && apt install -y dialog
@@ -20,28 +20,21 @@ ARQ_REDE="/tmp/dns_zona_reversa.txt"
 DOMINIO=$( [ -f "$ARQ_DOMINIO" ] && cat "$ARQ_DOMINIO" || echo "" )
 REDE=$( [ -f "$ARQ_REDE" ] && cat "$ARQ_REDE" || echo "" )
 
-# Calcula zona reversa padrão a partir da rede
-calc_zona_reversa() {
-    echo "$REDE" | awk -F. '{print $3"."$2"."$1".in-addr.arpa"}'
-}
-
-# Função para instalar o bind9 com barra de progresso
+# Função para instalar BIND9 com barra de progresso funcional
 instalar_dns() {
-    apt-get update -qq
+    apt-get update -qq && apt-get install -y bind9 bind9utils bind9-doc >/tmp/dns_install.log 2>&1 &
+    PID=$!
 
-    (
-        apt-get install -y bind9 bind9utils bind9-doc > /tmp/dns_install.log 2>&1 &
-        PID=$!
-
+    {
         while kill -0 $PID 2>/dev/null; do
             for i in $(seq 0 100); do
                 echo $i
-                sleep 0.05
+                sleep 0.03
                 kill -0 $PID 2>/dev/null || break
             done
         done
         echo 100
-    ) | dialog --gauge "Instalando BIND9 DNS Server..." 10 60 0
+    } | dialog --title "Instalando BIND9" --gauge "Aguarde, instalando o DNS..." 10 70 0
 
     wait $PID
     if [ $? -eq 0 ]; then
@@ -52,10 +45,16 @@ instalar_dns() {
     fi
 }
 
-# Atualiza named.conf.local
+# Calcula zona reversa padrão a partir da rede
+calc_zona_reversa() {
+    # espera rede no formato 192.168.0 (3 octetos)
+    echo "$REDE" | awk -F. '{print $3"."$2"."$1".in-addr.arpa"}'
+}
+
+# Atualiza named.conf.local com as zonas
 atualiza_named_conf_local() {
     sudo bash -c "cat > $CONF_LOCAL" <<EOF
-// Configuração automática
+// Configuração automática gerada pelo script
 
 zone "$DOMINIO" {
     type master;
@@ -106,7 +105,7 @@ cria_zona_reversa() {
 EOF
 }
 
-# Configura named.conf.options
+# Configura named.conf.options com IP e rede
 configura_named_conf_options() {
     IP_SERVIDOR=$(dialog --stdout --inputbox "Digite o IP do servidor DNS (ex: 192.168.0.1):" 8 50)
     [ -z "$IP_SERVIDOR" ] && return
@@ -135,11 +134,11 @@ options {
 };
 EOF
 
-    dialog --msgbox "named.conf.options atualizado." 6 50
+    dialog --msgbox "Arquivo named.conf.options atualizado." 6 50
     sudo systemctl restart bind9
 }
 
-# Atualiza /etc/resolv.conf
+# Atualiza /etc/resolv.conf para usar o DNS local
 configura_resolv_conf() {
     sudo mv /etc/resolv.conf /etc/resolv.conf.bkp
     sudo bash -c "cat > /etc/resolv.conf" <<EOF
@@ -154,8 +153,8 @@ while true; do
     DOMINIO_ATUAL=${DOMINIO:-"nenhuma"}
     REDE_ATUAL=${REDE:-"nenhuma"}
 
-    OPCAO=$(dialog --stdout --menu "📡 Configuração DNS" 18 60 6 \
-        1 "Instalar BIND9 DNS Server" \
+    OPCAO=$(dialog --stdout --menu "📡 Configuração DNS" 15 60 6 \
+        1 "Instalar BIND9" \
         2 "Configurar Zona Direta (atual: $DOMINIO_ATUAL)" \
         3 "Configurar Zona Reversa (atual: $REDE_ATUAL)" \
         4 "Configurar named.conf.options" \
