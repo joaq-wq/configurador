@@ -33,6 +33,36 @@ if [[ -n "$REDE" ]]; then
     ZONA_REVERSE=$(echo $REDE | awk -F. '{print $3"."$2"."$1".in-addr.arpa"}')
 fi
 
+# Função para renomear zona existente
+renomear_zona() {
+    local nome_antigo="$1"
+    local nome_novo
+
+    nome_novo=$(dialog --stdout --inputbox "Digite o novo nome para a zona '$nome_antigo':" 8 50)
+    [ -z "$nome_novo" ] && return 1
+
+    # Verifica se já existe zona com o nome novo
+    if grep -q "zone \"$nome_novo\"" "$CONF_LOCAL"; then
+        dialog --msgbox "❌ Já existe uma zona chamada '$nome_novo'. Tente outro nome." 6 50
+        return 1
+    fi
+
+    # Substitui no named.conf.local
+    sudo sed -i "s/zone \"$nome_antigo\"/zone \"$nome_novo\"/g" "$CONF_LOCAL"
+
+    # Renomeia arquivo da zona direta
+    if [ -f "$DIR_ZONA/db.$nome_antigo" ]; then
+        sudo mv "$DIR_ZONA/db.$nome_antigo" "$DIR_ZONA/db.$nome_novo"
+    fi
+
+    # Atualiza variável DOMINIO e arquivo temporário
+    DOMINIO="$nome_novo"
+    echo "$DOMINIO" > "$ARQ_DOMINIO"
+
+    dialog --msgbox "✅ Zona renomeada de '$nome_antigo' para '$nome_novo'." 6 50
+    return 0
+}
+
 # Função para ajustar named.conf.options
 ajustar_named_conf_options() {
     local IP_SERVIDOR=""
@@ -46,7 +76,7 @@ ajustar_named_conf_options() {
 
     sudo bash -c "cat > /etc/bind/named.conf.options" <<EOF
 options {
-    directory "/var/cache/bind";
+    directory \"/var/cache/bind\";
 
     recursion yes;
     allow-recursion { 127.0.0.1; $REDE_LOCAL; };
@@ -76,9 +106,30 @@ configurar_zona_direta() {
     DOMINIO_NOVO=$(dialog --stdout --inputbox "Digite o nome da Zona Direta (ex: empresa.com):" 8 50 "$DOMINIO")
     [ -z "$DOMINIO_NOVO" ] && return
 
+    # Se o nome novo for igual ao atual, só confirma
+    if [[ "$DOMINIO_NOVO" == "$DOMINIO" ]]; then
+        dialog --msgbox "Zona direta permanece como '$DOMINIO'." 6 50
+        return
+    fi
+
+    # Se já existir no named.conf.local, pergunta se quer renomear
+    if grep -q "zone \"$DOMINIO_NOVO\"" "$CONF_LOCAL"; then
+        dialog --yesno "A zona '$DOMINIO_NOVO' já existe. Deseja renomear a zona atual '$DOMINIO' para outro nome?" 7 60
+        if [ $? -eq 0 ]; then
+            # Tenta renomear
+            if ! renomear_zona "$DOMINIO"; then
+                dialog --msgbox "Não foi possível renomear a zona. Cancelando operação." 6 50
+                return
+            fi
+        else
+            dialog --msgbox "Operação cancelada." 6 50
+            return
+        fi
+    fi
+
+    # Atualiza zona direta
     DOMINIO="$DOMINIO_NOVO"
     echo "$DOMINIO" > "$ARQ_DOMINIO"
-
     ZONA_DIR="$DIR_ZONA/db.$DOMINIO"
 
     # Se arquivo da zona não existe, cria base
