@@ -1,21 +1,26 @@
 #!/bin/bash
 
-# Script DNS Interativo com dialog e configuração completa
-# Atualizado: Verificação BIND, barra de progresso real, adição de subdomínios, correções gerais.
+# Script DNS Interativo Completo v4.0
+# Melhorias: Barra de progresso funcional, gerenciamento de registros DNS completo, correções de sintaxe
 
+# Verifica e instala dialog se necessário
 if ! command -v dialog &>/dev/null; then
     apt-get update -qq
     apt-get install -y dialog >/dev/null 2>&1
 fi
 
+# Configurações
 CONF_LOCAL="/etc/bind/named.conf.local"
 CONF_OPTIONS="/etc/bind/named.conf.options"
 DIR_ZONA="/etc/bind"
 ARQ_DOMINIO="/tmp/dns_zona_direta.txt"
 ARQ_REDE="/tmp/dns_zona_reversa.txt"
+RESOLV_CUSTOM="/etc/resolv.conf.custom"
+
 DOMINIO=$( [ -f "$ARQ_DOMINIO" ] && cat "$ARQ_DOMINIO" || echo "" )
 REDE=$( [ -f "$ARQ_REDE" ] && cat "$ARQ_REDE" || echo "" )
 
+# Funções
 calc_zona_reversa() {
     echo "$REDE" | awk -F. '{print $3"."$2"."$1".in-addr.arpa"}'
 }
@@ -41,33 +46,33 @@ cria_zona_direta() {
     sudo bash -c "cat > $DIR_ZONA/db.$DOMINIO" <<EOF
 \$TTL    604800
 @       IN      SOA     $DOMINIO. root.$DOMINIO. (
-                              2         ; Serial
+                              $(date +%Y%m%d)01 ; Serial
                          604800         ; Refresh
                           86400         ; Retry
                         2419200         ; Expire
                          604800 )       ; Negative Cache TTL
 ;
-@       IN      NS      $DOMINIO.
+@       IN      NS      ns1.$DOMINIO.
 @       IN      A       $ip_srv
-www     IN      A       $ip_srv
-ftp     IN      A       $ip_srv
+ns1     IN      A       $ip_srv
 EOF
 }
 
 cria_zona_reversa() {
     local zona_rev=$(echo $REDE | tr '.' '-')
     local ip_srv=$(hostname -I | awk '{print $1}')
+    local ult_oct=$(echo "$ip_srv" | awk -F. '{print $4}')
     sudo bash -c "cat > $DIR_ZONA/db.$zona_rev" <<EOF
 \$TTL    604800
 @       IN      SOA     $DOMINIO. root.$DOMINIO. (
-                              2         ; Serial
+                              $(date +%Y%m%d)01 ; Serial
                          604800         ; Refresh
                           86400         ; Retry
                         2419200         ; Expire
                          604800 )       ; Negative Cache TTL
 ;
-@       IN      NS      $DOMINIO.
-1       IN      PTR     $DOMINIO.
+@       IN      NS      ns1.$DOMINIO.
+$ult_oct       IN      PTR     ns1.$DOMINIO.
 EOF
 }
 
@@ -98,48 +103,85 @@ options {
     listen-on-v6 { any; };
 };
 EOF
+
     dialog --msgbox "Arquivo named.conf.options atualizado." 6 50
     sudo systemctl restart bind9
 }
 
-configura_resolv_conf() {
-    dialog --msgbox "Lembre-se: /etc/resolv.conf só aceita 'nameserver <IP>'. Para resolver domínios, configure a zona no BIND." 8 60
-
+gerenciar_registros_dns() {
     while true; do
-        RESOLV_OPC=$(dialog --stdout --menu "Gerenciar /etc/resolv.conf" 12 50 3 \
-            1 "Adicionar nameserver" \
-            2 "Remover nameserver" \
+        OPCAO=$(dialog --stdout --menu "📝 Gerenciar Registros DNS para $DOMINIO" 17 60 7 \
+            1 "Adicionar registro A (IPv4)" \
+            2 "Adicionar registro CNAME (Alias)" \
+            3 "Adicionar registro MX (Mail Exchange)" \
+            4 "Adicionar registro customizado" \
+            5 "Listar registros existentes" \
+            6 "Remover registro" \
             0 "Voltar")
+
         [ $? -ne 0 ] && break
 
-        case $RESOLV_OPC in
+        case $OPCAO in
             1)
-                NS_IP=$(dialog --stdout --inputbox "Digite o IP do nameserver:" 8 50)
-                [ -z "$NS_IP" ] && continue
-                [ ! -f /etc/resolv.conf ] && sudo touch /etc/resolv.conf
-                echo "nameserver $NS_IP" | sudo tee -a /etc/resolv.conf >/dev/null
-                dialog --msgbox "Nameserver $NS_IP adicionado." 6 50
+                NOME=$(dialog --stdout --inputbox "Nome do host (ex: www, mail, @ para domínio):" 8 50)
+                [ -z "$NOME" ] && continue
+                IP=$(dialog --stdout --inputbox "Endereço IPv4 para $NOME:" 8 50)
+                [ -z "$IP" ] && continue
+                sudo bash -c "echo '$NOME     IN      A       $IP' >> $DIR_ZONA/db.$DOMINIO"
+                dialog --msgbox "Registro A adicionado:\n$NOME.$DOMINIO → $IP" 8 50
                 ;;
             2)
-                MAP_NS=$(grep "^nameserver" /etc/resolv.conf 2>/dev/null)
-                if [ -z "$MAP_NS" ]; then
-                    dialog --msgbox "Nenhum nameserver encontrado em /etc/resolv.conf" 6 50
+                ALIAS=$(dialog --stdout --inputbox "Nome do alias (ex: www, ftp):" 8 50)
+                [ -z "$ALIAS" ] && continue
+                REAL=$(dialog --stdout --inputbox "Nome real do host (ex: server1, @ para domínio):" 8 50)
+                [ -z "$REAL" ] && continue
+                sudo bash -c "echo '$ALIAS     IN      CNAME       $REAL' >> $DIR_ZONA/db.$DOMINIO"
+                dialog --msgbox "Registro CNAME adicionado:\n$ALIAS.$DOMINIO → $REAL.$DOMINIO" 8 50
+                ;;
+            3)
+                PRIORIDADE=$(dialog --stdout --inputbox "Prioridade MX (ex: 10):" 8 50)
+                [ -z "$PRIORIDADE" ] && continue
+                SERVIDOR=$(dialog --stdout --inputbox "FQDN do servidor de email:" 8 50)
+                [ -z "$SERVIDOR" ] && continue
+                sudo bash -c "echo '@     IN      MX       $PRIORIDADE      $SERVIDOR.' >> $DIR_ZONA/db.$DOMINIO"
+                dialog --msgbox "Registro MX adicionado:\n@.$DOMINIO → $SERVIDOR (Prioridade: $PRIORIDADE)" 8 50
+                ;;
+            4)
+                REGISTRO=$(dialog --stdout --inputbox "Registro customizado (formato BIND):" 12 60 "nome IN TTL tipo valor")
+                [ -z "$REGISTRO" ] && continue
+                sudo bash -c "echo '$REGISTRO' >> $DIR_ZONA/db.$DOMINIO"
+                dialog --msgbox "Registro adicionado:\n$REGISTRO" 8 60
+                ;;
+            5)
+                clear
+                echo "=== Registros DNS para $DOMINIO ==="
+                echo "----------------------------------"
+                grep -vE '^\$|^;' "$DIR_ZONA/db.$DOMINIO" | awk '{print $1,$3,$4,$5}' | column -t
+                echo "----------------------------------"
+                read -p "Pressione Enter para continuar..."
+                ;;
+            6)
+                LISTA_REGISTROS=$(grep -vE '^\$|^;' "$DIR_ZONA/db.$DOMINIO" | nl -ba -w 2 -s ') ')
+                if [ -z "$LISTA_REGISTROS" ]; then
+                    dialog --msgbox "Nenhum registro encontrado para remoção." 6 50
                     continue
                 fi
-                OPTIONS=()
-                i=1
-                while read -r line; do
-                    OPTIONS+=("$i" "$line")
-                    ((i++))
-                done <<< "$MAP_NS"
-                SEL=$(dialog --stdout --menu "Escolha nameserver para remover:" 12 50 "${#OPTIONS[@]}" "${OPTIONS[@]}")
-                [ -z "$SEL" ] && continue
-                REMOVE_LINE=$(echo "$MAP_NS" | sed -n "${SEL}p")
-                sudo sed -i "\|$REMOVE_LINE|d" /etc/resolv.conf
-                dialog --msgbox "Nameserver removido: $REMOVE_LINE" 6 50
+
+                SELECAO=$(dialog --stdout --menu "Selecione o registro para remover:" 20 70 13 $LISTA_REGISTROS)
+                [ -z "$SELECAO" ] && continue
+
+                sudo sed -i "${SELECAO}d" "$DIR_ZONA/db.$DOMINIO"
+                dialog --msgbox "Registro removido com sucesso." 6 50
                 ;;
             0) break ;;
         esac
+        
+        # Incrementa serial após modificações
+        if [[ $OPCAO -ge 1 && $OPCAO -le 4 ]] || [[ $OPCAO -eq 6 ]]; then
+            DATA=$(date +%Y%m%d%H)
+            sudo sed -i "s/^\(\s*[0-9]\+\s*;\s*Serial\)/${DATA}00 ; Serial/" "$DIR_ZONA/db.$DOMINIO"
+            sudo systemctl reload bind9
+        fi
     done
 }
 
@@ -148,20 +190,36 @@ verifica_bind_instalado() {
 }
 
 instalar_bind() {
+    if verifica_bind_instalado; then
+        dialog --msgbox "BIND9 já está instalado." 6 50
+        return
+    fi
+
     TMP_LOG="/tmp/bind_install.log"
     rm -f "$TMP_LOG"
-    DEBIAN_FRONTEND=noninteractive apt-get update -qq
+
+    # Barra de progresso real
     (
-    DEBIAN_FRONTEND=noninteractive apt-get install -y bind9 bind9utils bind9-doc >>"$TMP_LOG" 2>&1 &
-    PID=$!
-    while kill -0 $PID 2>/dev/null; do
         echo "XXX"
-        echo "$(wc -l < "$TMP_LOG")"
+        echo "0"
+        echo "Preparando instalação..."
+        echo "XXX"
+        DEBIAN_FRONTEND=noninteractive apt-get update -qq >>"$TMP_LOG" 2>&1
+        
+        echo "XXX"
+        echo "30"
         echo "Instalando BIND9..."
         echo "XXX"
-        sleep 0.5
-    done
-    ) | dialog --gauge "Instalando BIND9..." 10 70 0
+        DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            bind9 bind9utils bind9-doc >>"$TMP_LOG" 2>&1
+        
+        echo "XXX"
+        echo "100"
+        echo "Instalação concluída!"
+        echo "XXX"
+        sleep 1
+    ) | dialog --title "Instalando BIND9" --gauge "Por favor aguarde..." 10 70 0
+
     if verifica_bind_instalado; then
         dialog --msgbox "BIND9 instalado com sucesso!" 6 50
     else
@@ -170,32 +228,20 @@ instalar_bind() {
     fi
 }
 
-adiciona_registro_zona() {
-    DOM_ADIC=$(dialog --stdout --inputbox "Informe o subdomínio (ex: www):" 8 50)
-    [ -z "$DOM_ADIC" ] && return
-    IP_ADIC=$(dialog --stdout --inputbox "Informe o IP para $DOM_ADIC:" 8 50)
-    [ -z "$IP_ADIC" ] && return
-    ZONA_ARQ="$DIR_ZONA/db.$DOMINIO"
-    if [ ! -f "$ZONA_ARQ" ]; then
-        dialog --msgbox "Arquivo de zona $ZONA_ARQ não encontrado. Configure a zona direta primeiro." 6 50
-        return
-    fi
-    sudo bash -c "echo \"$DOM_ADIC     IN      A       $IP_ADIC\" >> $ZONA_ARQ"
-    dialog --msgbox "Registro $DOM_ADIC -> $IP_ADIC adicionado à zona." 6 50
-    sudo systemctl restart bind9
-}
-
+# Menu principal
 while true; do
     DOMINIO_ATUAL=${DOMINIO:-"nenhuma"}
     REDE_ATUAL=${REDE:-"nenhuma"}
+
     OPCAO=$(dialog --stdout --menu "📡 Configuração DNS" 17 60 7 \
         1 "Instalar BIND9" \
         2 "Configurar Zona Direta (atual: $DOMINIO_ATUAL)" \
         3 "Configurar Zona Reversa (atual: $REDE_ATUAL)" \
         4 "Configurar named.conf.options" \
         5 "Gerenciar /etc/resolv.conf" \
-        6 "Adicionar domínio e IP à zona" \
+        6 "Gerenciar Registros DNS" \
         0 "Sair")
+
     [ $? -ne 0 ] && break
 
     case $OPCAO in
@@ -220,7 +266,13 @@ while true; do
             ;;
         4) configura_named_conf_options ;;
         5) configura_resolv_conf ;;
-        6) adiciona_registro_zona ;;
-        0) clear; exit 0 ;;
+        6)
+            [ -z "$DOMINIO" ] && { dialog --msgbox "Configure primeiro a zona direta!" 6 50; continue; }
+            gerenciar_registros_dns
+            ;;
+        0)
+            clear
+            exit 0
+            ;;
     esac
 done
