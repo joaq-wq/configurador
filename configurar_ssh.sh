@@ -1,83 +1,92 @@
 #!/bin/bash
 
-# Verificar root
+# Verificar se é root
 if [ "$EUID" -ne 0 ]; then
     echo "Execute este script como root ou com sudo."
     exit 1
 fi
 
-# -------- Função para instalar OpenSSH com progresso e animação --------
+# Dependência
+if ! command -v dialog &>/dev/null; then
+    apt-get update && apt-get install -y dialog
+fi
+
+# Função instalação do OpenSSH Server com barra de progresso real
 instalar_ssh() {
-    apt-get update -qq
+    LOG="/tmp/ssh_install.log"
+    rm -f "$LOG"
 
-    rm -f /tmp/ssh_install.log
-
-    apt-get install -y openssh-server 2>/tmp/ssh_install.log &
+    # Inicia a instalação em segundo plano
+    (
+        apt-get update -qq
+        apt-get install -y openssh-server >"$LOG" 2>&1
+    ) &
     PID=$!
 
     (
         SPIN='-\|/'
         i=0
-        PROGRESS=0
+        PROGRESS=5
 
         while kill -0 $PID 2>/dev/null; do
-            if [ -f /tmp/ssh_install.log ]; then
-                LINE_COUNT=$(wc -l < /tmp/ssh_install.log)
-                TARGET_PROGRESS=$((LINE_COUNT * 3))
-                [ $TARGET_PROGRESS -gt 95 ] && TARGET_PROGRESS=95
+            # Analisar o tamanho do log como proxy para progresso
+            if [ -f "$LOG" ]; then
+                LINES=$(wc -l < "$LOG")
+                TARGET=$((LINES * 3))
+                [ "$TARGET" -gt 90 ] && TARGET=90
             else
-                TARGET_PROGRESS=5
+                TARGET=10
             fi
 
-            if [ $PROGRESS -lt $TARGET_PROGRESS ]; then
+            if [ "$PROGRESS" -lt "$TARGET" ]; then
                 PROGRESS=$((PROGRESS + 1))
             fi
 
             i=$(( (i + 1) % 4 ))
             echo "$PROGRESS"
             echo "Instalando OpenSSH Server... ${SPIN:$i:1}"
-            sleep 0.1
+            sleep 0.2
         done
 
-        while [ $PROGRESS -lt 100 ]; do
-            PROGRESS=$((PROGRESS + 1))
+        # Finalizando de 90 até 100
+        while [ "$PROGRESS" -lt 100 ]; do
+            PROGRESS=$((PROGRESS + 2))
             echo "$PROGRESS"
             echo "Finalizando instalação..."
-            sleep 0.05
+            sleep 0.1
         done
-
-    ) | dialog --gauge "Preparando instalação..." 10 60 0
+    ) | dialog --gauge "Instalando OpenSSH Server..." 10 70 0
 
     wait $PID
     RET=$?
 
     if [ $RET -eq 0 ]; then
-        dialog --msgbox "OpenSSH Server instalado com sucesso!" 6 50
+        dialog --msgbox "✅ OpenSSH Server instalado com sucesso!" 6 50
     else
-        dialog --msgbox "Erro na instalação. Veja /tmp/ssh_install.log" 8 60
+        dialog --msgbox "❌ Erro na instalação. Verifique $LOG" 8 60
         exit 1
     fi
 }
 
-# -------- Função garantir usuário sshd --------
+# Função garantir usuário sshd
 garantir_usuario_sshd() {
     if ! id sshd &>/dev/null; then
         useradd -r -s /usr/sbin/nologin sshd
     fi
 }
 
-# -------- Reiniciar SSH --------
+# Função reiniciar SSH
 reiniciar_ssh() {
     if sshd -t 2>/tmp/sshd_err.log; then
         systemctl restart ssh.service
-        dialog --msgbox "SSH reiniciado com sucesso!" 6 40
+        dialog --msgbox "🔄 SSH reiniciado com sucesso!" 6 40
     else
-        dialog --msgbox "Erro na configuração SSH:\n$(cat /tmp/sshd_err.log)" 10 50
+        dialog --msgbox "❌ Erro na configuração SSH:\n$(cat /tmp/sshd_err.log)" 10 50
     fi
     rm -f /tmp/sshd_err.log
 }
 
-# -------- Pega valores do sshd_config --------
+# Função pegar valores do sshd_config
 get_ssh_conf_value() {
     grep -i "^$1" /etc/ssh/sshd_config | awk '{print $2}' | tail -n 1
 }
@@ -130,9 +139,9 @@ while true; do
                         if [[ "$PORTA_NOVA" =~ ^[0-9]+$ ]] && [ "$PORTA_NOVA" -ge 1 ] && [ "$PORTA_NOVA" -le 65535 ]; then
                             sed -i '/^Port /d' /etc/ssh/sshd_config
                             echo "Port $PORTA_NOVA" >> /etc/ssh/sshd_config
-                            dialog --msgbox "Porta alterada para $PORTA_NOVA" 6 40
+                            dialog --msgbox "✅ Porta alterada para $PORTA_NOVA" 6 40
                         else
-                            dialog --msgbox "Porta inválida." 6 40
+                            dialog --msgbox "❌ Porta inválida." 6 40
                         fi
                         ;;
                     2)
@@ -141,7 +150,7 @@ while true; do
                         [ $? -eq 0 ] && {
                             sed -i '/^PermitRootLogin /d' /etc/ssh/sshd_config
                             echo "PermitRootLogin $ROOT" >> /etc/ssh/sshd_config
-                            dialog --msgbox "PermitRootLogin alterado para $ROOT" 6 40
+                            dialog --msgbox "✅ PermitRootLogin alterado para $ROOT" 6 40
                         }
                         ;;
                     3)
@@ -150,7 +159,7 @@ while true; do
                         [ $? -eq 0 ] && {
                             sed -i '/^PasswordAuthentication /d' /etc/ssh/sshd_config
                             echo "PasswordAuthentication $PASS" >> /etc/ssh/sshd_config
-                            dialog --msgbox "PasswordAuthentication alterado para $PASS" 6 40
+                            dialog --msgbox "✅ PasswordAuthentication alterado para $PASS" 6 40
                         }
                         ;;
                     4)
@@ -159,7 +168,7 @@ while true; do
                         [ $? -eq 0 ] && {
                             sed -i '/^PubkeyAuthentication /d' /etc/ssh/sshd_config
                             echo "PubkeyAuthentication $PUBKEY" >> /etc/ssh/sshd_config
-                            dialog --msgbox "PubkeyAuthentication alterado para $PUBKEY" 6 40
+                            dialog --msgbox "✅ PubkeyAuthentication alterado para $PUBKEY" 6 40
                         }
                         ;;
                     5)
@@ -168,7 +177,7 @@ while true; do
                         [ $? -eq 0 ] && {
                             sed -i '/^LogLevel /d' /etc/ssh/sshd_config
                             echo "LogLevel $LOG" >> /etc/ssh/sshd_config
-                            dialog --msgbox "LogLevel alterado para $LOG" 6 40
+                            dialog --msgbox "✅ LogLevel alterado para $LOG" 6 40
                         }
                         ;;
                     6)
