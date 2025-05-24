@@ -1,109 +1,44 @@
-#!/bin/bash
+# Função para listar certificados SSL gerados
+listar_certificados_ssl() {
+    dialog --msgbox "Certificados SSL encontrados:\n\n$(ls -l /etc/ssl/certs/*.pem 2>/dev/null)" 15 60
+}
 
-# Verificar se é root
-if [ "$EUID" -ne 0 ]; then
-    echo "Execute este script como root ou com sudo."
-    exit 1
-fi
-
-# Verificar dependência dialog
-if ! command -v dialog &>/dev/null; then
-    apt-get update && apt-get install -y dialog
-fi
-#!/bin/bash
-
-# Verificar se é root
-if [ "$EUID" -ne 0 ]; then
-    echo "Execute este script como root ou com sudo."
-    exit 1
-fi
-
-# Verificar dependência dialog
-if ! command -v dialog &>/dev/null; then
-    apt-get update && apt-get install -y dialog
-fi
-
-LOG="/tmp/ftp_install.log"
-VSFTPD_CONF="/etc/vsftpd.conf"
-
-# Função para instalar vsftpd
-instalar_ftp() {
-    rm -f "$LOG"
-    (
-        apt-get update -qq
-        apt-get install -y vsftpd openssl >"$LOG" 2>&1
-    ) &
-    PID=$!
-
-    (
-        SPIN='-\|/'
-        i=0
-        PROGRESS=5
-
-        while kill -0 $PID 2>/dev/null; do
-            if [ -f "$LOG" ]; then
-                LINES=$(wc -l < "$LOG")
-                TARGET=$((LINES * 3))
-                [ "$TARGET" -gt 90 ] && TARGET=90
-            else
-                TARGET=10
-            fi
-
-            if [ "$PROGRESS" -lt "$TARGET" ]; then
-                PROGRESS=$((PROGRESS + 1))
-            fi
-
-            i=$(( (i + 1) % 4 ))
-            echo "$PROGRESS"
-            echo "Instalando vsftpd... ${SPIN:$i:1}"
-            sleep 0.2
-        done
-
-        while [ "$PROGRESS" -lt 100 ]; do
-            PROGRESS=$((PROGRESS + 2))
-            echo "$PROGRESS"
-            echo "Finalizando instalação..."
-            sleep 0.1
-        done
-    ) | dialog --gauge "Instalando vsftpd..." 10 70 0
-
-    wait $PID
-    RET=$?
-
-    if [ $RET -eq 0 ]; then
-        dialog --msgbox "✅ vsftpd instalado com sucesso!" 6 50
+# Função para remover certificados SSL
+remover_certificados_ssl() {
+    CERT=$(dialog --stdout --inputbox "Digite o caminho completo do certificado para remover:" 8 60 "/etc/ssl/certs/ftp-cert.pem")
+    KEY=$(dialog --stdout --inputbox "Digite o caminho completo da chave privada para remover:" 8 60 "/etc/ssl/private/ftp-key.pem")
+    
+    if [ -f "$CERT" ] && [ -f "$KEY" ]; then
+        rm -f "$CERT" "$KEY"
+        dialog --msgbox "Certificado e chave removidos." 6 40
     else
-        dialog --msgbox "❌ Erro na instalação. Verifique $LOG" 8 60
-        exit 1
+        dialog --msgbox "Arquivo(s) não encontrado(s)." 6 40
     fi
 }
 
-# Função para verificar se uma configuração existe
-check_config() {
-    grep -E "^$1=" "$VSFTPD_CONF" | awk -F= '{print $2}'
-}
+# Função para adicionar (gerar) certificado SSL
+adicionar_certificado_ssl() {
+    DIR_CERT="/etc/ssl/certs"
+    DIR_KEY="/etc/ssl/private"
 
-# Função para alterar ou adicionar configuração
-set_config() {
-    sed -i "/^$1=/d" "$VSFTPD_CONF"
-    echo "$1=$2" >> "$VSFTPD_CONF"
-}
+    CERT_PATH=$(dialog --stdout --inputbox "Caminho para salvar certificado (.pem):" 8 60 "${DIR_CERT}/ftp-cert.pem")
+    KEY_PATH=$(dialog --stdout --inputbox "Caminho para salvar chave privada (.pem):" 8 60 "${DIR_KEY}/ftp-key.pem")
 
-# Gerar certificado SSL
-gerar_certificado_ssl() {
-    mkdir -p /etc/ssl/private
-    mkdir -p /etc/ssl/certs
+    if [ -z "$CERT_PATH" ] || [ -z "$KEY_PATH" ]; then
+        dialog --msgbox "Caminho inválido." 6 40
+        return
+    fi
 
     openssl req -x509 -nodes -days 3650 -newkey rsa:2048 \
-    -keyout /etc/ssl/private/ftp-key.pem \
-    -out /etc/ssl/certs/ftp-cert.pem \
-    -subj "/C=BR/ST=Estado/L=Cidade/O=MinhaEmpresa/OU=TI/CN=$(hostname)"
+        -keyout "$KEY_PATH" \
+        -out "$CERT_PATH" \
+        -subj "/C=BR/ST=Estado/L=Cidade/O=MinhaEmpresa/OU=TI/CN=$(hostname)"
 
-    dialog --msgbox "✅ Certificado SSL autoassinado gerado em:\n/etc/ssl/certs/ftp-cert.pem" 8 60
+    dialog --msgbox "✅ Certificado gerado:\n$CERT_PATH\n$KEY_PATH" 8 60
 }
 
-# Ativar/Desativar TLS
-configurar_tls() {
+# Função para ligar/desligar SSL
+alternar_ssl() {
     SSL_STATUS=$(check_config "ssl_enable")
     if [ "$SSL_STATUS" == "YES" ]; then
         dialog --yesno "TLS/SSL está ativado. Deseja desativar?" 7 50
@@ -112,24 +47,93 @@ configurar_tls() {
             dialog --msgbox "🔓 TLS/SSL desativado." 6 40
         fi
     else
-        dialog --yesno "Deseja gerar um certificado autoassinado?" 7 50
+        dialog --yesno "TLS/SSL está desativado. Deseja ativar?" 7 50
         if [ $? -eq 0 ]; then
-            gerar_certificado_ssl
+            # Pedir para escolher certificado e chave
+            CERT_PATH=$(dialog --stdout --inputbox "Caminho do certificado (.pem):" 8 60 "/etc/ssl/certs/ftp-cert.pem")
+            KEY_PATH=$(dialog --stdout --inputbox "Caminho da chave privada (.pem):" 8 60 "/etc/ssl/private/ftp-key.pem")
+
+            if [ ! -f "$CERT_PATH" ] || [ ! -f "$KEY_PATH" ]; then
+                dialog --msgbox "Certificado ou chave não encontrado." 6 40
+                return
+            fi
+
+            set_config ssl_enable YES
+            set_config rsa_cert_file "$CERT_PATH"
+            set_config rsa_private_key_file "$KEY_PATH"
+            set_config allow_anon_ssl NO
+            set_config force_local_data_ssl YES
+            set_config force_local_logins_ssl YES
+            set_config ssl_tlsv1 YES
+            set_config ssl_sslv2 NO
+            set_config ssl_sslv3 NO
+
+            dialog --msgbox "🔒 TLS/SSL ativado com certificado:\n$CERT_PATH" 8 60
         fi
-        set_config ssl_enable YES
-        set_config rsa_cert_file /etc/ssl/certs/ftp-cert.pem
-        set_config rsa_private_key_file /etc/ssl/private/ftp-key.pem
-        set_config allow_anon_ssl NO
-        set_config force_local_data_ssl YES
-        set_config force_local_logins_ssl YES
-        set_config ssl_tlsv1 YES
-        set_config ssl_sslv2 NO
-        set_config ssl_sslv3 NO
-        dialog --msgbox "🔒 TLS/SSL ativado." 6 40
     fi
 }
 
-# Criar usuário FTP
+# Menu SSL expandido
+menu_ssl() {
+    while true; do
+        OP_SSL=$(dialog --stdout --menu "Gerenciar SSL/TLS" 15 60 6 \
+            1 "Listar certificados SSL" \
+            2 "Adicionar novo certificado" \
+            3 "Remover certificado" \
+            4 "Ativar/Desativar SSL" \
+            0 "Voltar")
+
+        [ $? -ne 0 ] && break
+
+        case $OP_SSL in
+            1) listar_certificados_ssl ;;
+            2) adicionar_certificado_ssl ;;
+            3) remover_certificados_ssl ;;
+            4) alternar_ssl ;;
+            0) break ;;
+        esac
+    done
+}
+
+# Função para ativar/desativar login local
+toggle_login_local() {
+    STATUS=$(check_config "local_enable")
+    if [ "$STATUS" == "YES" ]; then
+        dialog --yesno "Login de usuários locais está ativado. Deseja desativar?" 7 50
+        if [ $? -eq 0 ]; then
+            set_config local_enable NO
+            dialog --msgbox "Login local desativado." 6 40
+        fi
+    else
+        dialog --yesno "Login de usuários locais está desativado. Deseja ativar?" 7 50
+        if [ $? -eq 0 ]; then
+            set_config local_enable YES
+            dialog --msgbox "Login local ativado." 6 40
+        fi
+    fi
+}
+
+# Função para ativar/desativar chroot
+toggle_chroot() {
+    STATUS=$(check_config "chroot_local_user")
+    if [ "$STATUS" == "YES" ]; then
+        dialog --yesno "Chroot está ativado. Deseja desativar?" 7 50
+        if [ $? -eq 0 ]; then
+            set_config chroot_local_user NO
+            dialog --msgbox "Chroot desativado." 6 40
+        fi
+    else
+        dialog --yesno "Chroot está desativado. Deseja ativar?" 7 50
+        if [ $? -eq 0 ]; then
+            set_config chroot_local_user YES
+            dialog --msgbox "Chroot ativado." 6 40
+        fi
+    fi
+}
+
+# Gerenciamento de usuários FTP - para controle simples, vamos salvar usuários criados no arquivo /etc/ftp_users.txt
+USUARIOS_FILE="/etc/ftp_users.txt"
+
 criar_usuario() {
     USER=$(dialog --stdout --inputbox "Digite o nome do usuário:" 8 40)
     [ -z "$USER" ] && return
@@ -137,18 +141,40 @@ criar_usuario() {
     PASS=$(dialog --stdout --insecure --passwordbox "Digite a senha do usuário:" 8 40)
     [ -z "$PASS" ] && return
 
+    if id "$USER" &>/dev/null; then
+        dialog --msgbox "Usuário já existe." 6 40
+        return
+    fi
+
     useradd -m "$USER"
     echo "$USER:$PASS" | chpasswd
+    echo "$USER" >> "$USUARIOS_FILE"
 
     dialog --msgbox "✅ Usuário $USER criado com sucesso!" 6 50
 }
 
-# Editar configuração manualmente
-editar_configuracao() {
-    nano "$VSFTPD_CONF"
+listar_usuarios() {
+    if [ ! -f "$USUARIOS_FILE" ] || [ ! -s "$USUARIOS_FILE" ]; then
+        dialog --msgbox "Nenhum usuário FTP criado via script." 6 50
+        return
+    fi
+
+    USUARIOS=$(cat "$USUARIOS_FILE" | tr '\n' ' ')
+    SELECIONE=$(dialog --stdout --menu "Usuários FTP criados:" 15 50 10 $(for u in $USUARIOS; do echo "$u" "$u"; done))
+
+    if [ -z "$SELECIONE" ]; then
+        return
+    fi
+
+    dialog --yesno "Deseja remover o usuário '$SELECIONE'?" 7 50
+    if [ $? -eq 0 ]; then
+        userdel -r "$SELECIONE"
+        sed -i "/^$SELECIONE$/d" "$USUARIOS_FILE"
+        dialog --msgbox "Usuário '$SELECIONE' removido." 6 40
+    fi
 }
 
-# Configuração principal
+# Menu de configuração FTP atualizado
 configurar_ftp() {
     while true; do
         ANON=$(check_config "anonymous_enable")
@@ -157,13 +183,13 @@ configurar_ftp() {
         CHROOT=$(check_config "chroot_local_user")
         SSL=$(check_config "ssl_enable")
 
-        SUB_OPCAO=$(dialog --stdout --menu "⚙️ Configurar FTP" 20 70 10 \
+        SUB_OPCAO=$(dialog --stdout --menu "⚙️ Configurar FTP" 20 70 15 \
             1 "Permitir conexões anônimas (Atual: ${ANON:-NO})" \
-            2 "Ativar login de usuários locais (Atual: ${LOCAL:-NO})" \
+            2 "Ativar/Desativar login de usuários locais (Atual: ${LOCAL:-NO})" \
             3 "Permitir upload (Atual: ${WRITE:-NO})" \
-            4 "Ativar chroot (travar usuário na pasta) (Atual: ${CHROOT:-NO})" \
+            4 "Ativar/Desativar chroot (Atual: ${CHROOT:-NO})" \
             5 "Configurar TLS/SSL (Atual: ${SSL:-NO})" \
-            6 "Criar usuário FTP" \
+            6 "Gerenciar usuários FTP" \
             7 "Editar configuração manual (nano)" \
             8 "Reiniciar FTP" \
             0 "Voltar")
@@ -180,8 +206,7 @@ configurar_ftp() {
                 fi
                 ;;
             2)
-                set_config local_enable YES
-                dialog --msgbox "✅ Login de usuários locais ativado." 6 50
+                toggle_login_local
                 ;;
             3)
                 dialog --yesno "Permitir upload e escrita?" 7 50
@@ -192,160 +217,31 @@ configurar_ftp() {
                 fi
                 ;;
             4)
-                set_config chroot_local_user YES
-                dialog --msgbox "🔐 Usuários agora estão presos em suas pastas home." 6 50
+                toggle_chroot
                 ;;
             5)
-                configurar_tls
+                menu_ssl
                 ;;
             6)
-                criar_usuario
+                while true; do
+                    USR_OP=$(dialog --stdout --menu "Gerenciar usuários FTP" 15 50 10 \
+                        1 "Listar e remover usuários" \
+                        2 "Adicionar usuário" \
+                        0 "Voltar")
+
+                    [ $? -ne 0 ] && break
+
+                    case $USR_OP in
+                        1) listar_usuarios ;;
+                        2) criar_usuario ;;
+                        0) break ;;
+                    esac
+                done
                 ;;
             7)
                 editar_configuracao
                 ;;
             8)
-                systemctl restart vsftpd
-                dialog --msgbox "🔄 FTP reiniciado com sucesso." 6 50
-                ;;
-            0)
-                break
-                ;;
-        esac
-    done
-}
-
-# Menu principal
-while true; do
-    OPCAO=$(dialog --stdout --menu "Menu FTP" 15 60 5 \
-        1 "Instalar vsftpd" \
-        2 "Configurar FTP" \
-        0 "Sair")
-
-    [ $? -ne 0 ] && break
-
-    case $OPCAO in
-        1)
-            instalar_ftp
-            ;;
-        2)
-            configurar_ftp
-            ;;
-        0)
-            break
-            ;;
-    esac
-done
-
-LOG="/tmp/ftp_install.log"
-
-# Função para instalar o vsftpd com barra de progresso
-instalar_ftp() {
-    rm -f "$LOG"
-
-    (
-        apt-get update -qq
-        apt-get install -y vsftpd >"$LOG" 2>&1
-    ) &
-    PID=$!
-
-    (
-        SPIN='-\|/'
-        i=0
-        PROGRESS=5
-
-        while kill -0 $PID 2>/dev/null; do
-            if [ -f "$LOG" ]; then
-                LINES=$(wc -l < "$LOG")
-                TARGET=$((LINES * 3))
-                [ "$TARGET" -gt 90 ] && TARGET=90
-            else
-                TARGET=10
-            fi
-
-            if [ "$PROGRESS" -lt "$TARGET" ]; then
-                PROGRESS=$((PROGRESS + 1))
-            fi
-
-            i=$(( (i + 1) % 4 ))
-            echo "$PROGRESS"
-            echo "Instalando vsftpd... ${SPIN:$i:1}"
-            sleep 0.2
-        done
-
-        while [ "$PROGRESS" -lt 100 ]; do
-            PROGRESS=$((PROGRESS + 2))
-            echo "$PROGRESS"
-            echo "Finalizando instalação..."
-            sleep 0.1
-        done
-    ) | dialog --gauge "Instalando vsftpd..." 10 70 0
-
-    wait $PID
-    RET=$?
-
-    if [ $RET -eq 0 ]; then
-        dialog --msgbox "✅ vsftpd instalado com sucesso!" 6 50
-    else
-        dialog --msgbox "❌ Erro na instalação. Verifique $LOG" 8 60
-        exit 1
-    fi
-}
-
-# Função para editar configuração do vsftpd
-editar_configuracao() {
-    nano /etc/vsftpd.conf
-}
-
-# Função para aplicar algumas configurações básicas via menu
-configurar_ftp() {
-    while true; do
-        SUB_OPCAO=$(dialog --stdout --menu "⚙️ Configurar FTP" 20 70 10 \
-            1 "Permitir conexões anônimas (padrão: NO)" \
-            2 "Ativar login de usuários locais" \
-            3 "Permitir upload" \
-            4 "Ativar chroot (travar usuário na pasta)" \
-            5 "Editar manualmente (nano)" \
-            6 "Reiniciar FTP" \
-            0 "Voltar")
-
-        [ $? -ne 0 ] && break
-
-        case $SUB_OPCAO in
-            1)
-                sed -i '/^anonymous_enable=/d' /etc/vsftpd.conf
-                dialog --yesno "Permitir conexões anônimas?" 7 50
-                if [ $? -eq 0 ]; then
-                    echo "anonymous_enable=YES" >> /etc/vsftpd.conf
-                else
-                    echo "anonymous_enable=NO" >> /etc/vsftpd.conf
-                fi
-                ;;
-            2)
-                sed -i '/^local_enable=/d' /etc/vsftpd.conf
-                echo "local_enable=YES" >> /etc/vsftpd.conf
-                dialog --msgbox "✅ Login de usuários locais ativado." 6 40
-                ;;
-            3)
-                sed -i '/^write_enable=/d' /etc/vsftpd.conf
-                dialog --yesno "Permitir upload e escrita?" 7 50
-                if [ $? -eq 0 ]; then
-                    echo "write_enable=YES" >> /etc/vsftpd.conf
-                    dialog --msgbox "✅ Upload ativado." 6 40
-                else
-                    echo "write_enable=NO" >> /etc/vsftpd.conf
-                    dialog --msgbox "🚫 Upload desativado." 6 40
-                fi
-                ;;
-            4)
-                sed -i '/^chroot_local_user=/d' /etc/vsftpd.conf
-                echo "chroot_local_user=YES" >> /etc/vsftpd.conf
-                dialog --msgbox "🔐 Usuários agora estão presos em suas pastas home." 6 50
-                ;;
-            5)
-                editar_configuracao
-                ;;
-            6)
                 systemctl restart vsftpd
                 dialog --msgbox "🔄 FTP reiniciado com sucesso." 6 40
                 ;;
@@ -355,25 +251,3 @@ configurar_ftp() {
         esac
     done
 }
-
-# Menu principal FTP
-while true; do
-    OPCAO=$(dialog --stdout --menu "Menu FTP" 15 60 5 \
-        1 "Instalar vsftpd" \
-        2 "Configurar FTP" \
-        0 "Voltar")
-
-    [ $? -ne 0 ] && break
-
-    case $OPCAO in
-        1)
-            instalar_ftp
-            ;;
-        2)
-            configurar_ftp
-            ;;
-        0)
-            break
-            ;;
-    esac
-done
