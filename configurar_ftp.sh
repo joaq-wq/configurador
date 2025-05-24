@@ -1,9 +1,35 @@
-# Função para listar certificados SSL gerados
+#!/bin/bash
+
+CONFIG_FILE="/etc/vsftpd.conf"
+USUARIOS_FILE="/etc/ftp_users.txt"
+
+# --- Funções básicas para leitura e escrita da config ---
+
+check_config() {
+    local chave="$1"
+    grep -E "^$chave=" "$CONFIG_FILE" | tail -1 | cut -d= -f2
+}
+
+set_config() {
+    local chave="$1"
+    local valor="$2"
+    if grep -qE "^$chave=" "$CONFIG_FILE"; then
+        sed -i "s|^$chave=.*|$chave=$valor|" "$CONFIG_FILE"
+    else
+        echo "$chave=$valor" >> "$CONFIG_FILE"
+    fi
+}
+
+editar_configuracao() {
+    nano "$CONFIG_FILE"
+}
+
+# --- SSL ---
+
 listar_certificados_ssl() {
     dialog --msgbox "Certificados SSL encontrados:\n\n$(ls -l /etc/ssl/certs/*.pem 2>/dev/null)" 15 60
 }
 
-# Função para remover certificados SSL
 remover_certificados_ssl() {
     CERT=$(dialog --stdout --inputbox "Digite o caminho completo do certificado para remover:" 8 60 "/etc/ssl/certs/ftp-cert.pem")
     KEY=$(dialog --stdout --inputbox "Digite o caminho completo da chave privada para remover:" 8 60 "/etc/ssl/private/ftp-key.pem")
@@ -16,7 +42,6 @@ remover_certificados_ssl() {
     fi
 }
 
-# Função para adicionar (gerar) certificado SSL
 adicionar_certificado_ssl() {
     DIR_CERT="/etc/ssl/certs"
     DIR_KEY="/etc/ssl/private"
@@ -37,7 +62,6 @@ adicionar_certificado_ssl() {
     dialog --msgbox "✅ Certificado gerado:\n$CERT_PATH\n$KEY_PATH" 8 60
 }
 
-# Função para ligar/desligar SSL
 alternar_ssl() {
     SSL_STATUS=$(check_config "ssl_enable")
     if [ "$SSL_STATUS" == "YES" ]; then
@@ -49,7 +73,6 @@ alternar_ssl() {
     else
         dialog --yesno "TLS/SSL está desativado. Deseja ativar?" 7 50
         if [ $? -eq 0 ]; then
-            # Pedir para escolher certificado e chave
             CERT_PATH=$(dialog --stdout --inputbox "Caminho do certificado (.pem):" 8 60 "/etc/ssl/certs/ftp-cert.pem")
             KEY_PATH=$(dialog --stdout --inputbox "Caminho da chave privada (.pem):" 8 60 "/etc/ssl/private/ftp-key.pem")
 
@@ -73,7 +96,6 @@ alternar_ssl() {
     fi
 }
 
-# Menu SSL expandido
 menu_ssl() {
     while true; do
         OP_SSL=$(dialog --stdout --menu "Gerenciar SSL/TLS" 15 60 6 \
@@ -95,7 +117,8 @@ menu_ssl() {
     done
 }
 
-# Função para ativar/desativar login local
+# --- Login local ---
+
 toggle_login_local() {
     STATUS=$(check_config "local_enable")
     if [ "$STATUS" == "YES" ]; then
@@ -113,7 +136,8 @@ toggle_login_local() {
     fi
 }
 
-# Função para ativar/desativar chroot
+# --- Chroot ---
+
 toggle_chroot() {
     STATUS=$(check_config "chroot_local_user")
     if [ "$STATUS" == "YES" ]; then
@@ -131,8 +155,7 @@ toggle_chroot() {
     fi
 }
 
-# Gerenciamento de usuários FTP - para controle simples, vamos salvar usuários criados no arquivo /etc/ftp_users.txt
-USUARIOS_FILE="/etc/ftp_users.txt"
+# --- Gerenciar usuários FTP ---
 
 criar_usuario() {
     USER=$(dialog --stdout --inputbox "Digite o nome do usuário:" 8 40)
@@ -148,7 +171,13 @@ criar_usuario() {
 
     useradd -m "$USER"
     echo "$USER:$PASS" | chpasswd
-    echo "$USER" >> "$USUARIOS_FILE"
+    # Cria a pasta home com permissão segura
+    chmod 700 /home/"$USER"
+
+    # Registra no arquivo de controle
+    if ! grep -q "^$USER$" "$USUARIOS_FILE" 2>/dev/null; then
+        echo "$USER" >> "$USUARIOS_FILE"
+    fi
 
     dialog --msgbox "✅ Usuário $USER criado com sucesso!" 6 50
 }
@@ -174,7 +203,8 @@ listar_usuarios() {
     fi
 }
 
-# Menu de configuração FTP atualizado
+# --- Menu principal de configuração FTP ---
+
 configurar_ftp() {
     while true; do
         ANON=$(check_config "anonymous_enable")
@@ -251,3 +281,24 @@ configurar_ftp() {
         esac
     done
 }
+
+# --- Menu principal do script ---
+
+main_menu() {
+    while true; do
+        OPCAO=$(dialog --stdout --menu "Gerenciador vsftpd" 15 50 8 \
+            1 "Configurar FTP" \
+            0 "Sair")
+
+        [ $? -ne 0 ] && break
+
+        case $OPCAO in
+            1) configurar_ftp ;;
+            0) break ;;
+        esac
+    done
+}
+
+# --- Executa o menu principal ---
+main_menu
+clear
