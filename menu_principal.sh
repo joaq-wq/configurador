@@ -48,7 +48,7 @@ while true; do
         4) dialog --msgbox "🚧 Em construção..." 6 40 ;;
         5) dialog --msgbox "🚧 Em construção..." 6 40 ;;
         6) dialog --msgbox "🚧 Em construção..." 6 40 ;;
-        7) dialog --msgbox "🚧 Em construção..." 6 40 ;;
+        7) bash ./configurar_firewall.sh ;;
         8) dialog --msgbox "🚧 Em construção..." 6 40 ;;
         0) clear; exit 0 ;;
         *) dialog --msgbox "❌ Opção inválida!" 6 40 ;;
