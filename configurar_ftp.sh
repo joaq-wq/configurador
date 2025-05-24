@@ -1,203 +1,153 @@
 #!/bin/bash
 
-#=============================
-# FTP Installer & Manager
-#=============================
+# Verificar se é root
+if [ "$EUID" -ne 0 ]; then
+    echo "Execute este script como root ou com sudo."
+    exit 1
+fi
 
-# Função para animação de download
-download_animation() {
-    echo -ne "Baixando vsftpd...\n"
-    for i in {1..100}; do
-        sleep 0.02
-        echo -ne "[$(printf '%0.s#' $(seq 1 $((i/2))))$(printf '%0.s-' $(seq 1 $((50-(i/2)))))] $i%\r"
-    done
-    echo -e "\nDownload concluído!\n"
-}
+# Verificar dependência dialog
+if ! command -v dialog &>/dev/null; then
+    apt-get update && apt-get install -y dialog
+fi
 
-#=============================
-# Instalação
-#=============================
-install_ftp() {
-    clear
-    download_animation
-    sudo apt update > /dev/null 2>&1
-    sudo apt install -y vsftpd > /dev/null 2>&1
-    sudo systemctl enable vsftpd
-    sudo systemctl start vsftpd
-    echo "✅ vsftpd instalado e iniciado com sucesso."
-    sleep 2
-}
+LOG="/tmp/ftp_install.log"
 
-#=============================
-# Menu de gerenciamento
-#=============================
-manage_ftp() {
-    while true; do
-        clear
-        echo "====== Gerenciador FTP (vsftpd) ======"
-        echo "1) Ver status do FTP"
-        echo "2) Ativar FTP"
-        echo "3) Desativar FTP"
-        echo "4) Editar configurações principais"
-        echo "5) Reiniciar FTP"
-        echo "6) Sair"
-        echo "======================================="
-        read -p "Escolha uma opção: " opcao
+# Função para instalar o vsftpd com barra de progresso
+instalar_ftp() {
+    rm -f "$LOG"
 
-        case $opcao in
-            1)
-                systemctl status vsftpd
-                read -p "Pressione ENTER para voltar ao menu..."
-                ;;
-            2)
-                sudo systemctl start vsftpd
-                echo "✅ FTP Ativado"
-                sleep 2
-                ;;
-            3)
-                sudo systemctl stop vsftpd
-                echo "❌ FTP Desativado"
-                sleep 2
-                ;;
-            4)
-                config_menu
-                ;;
-            5)
-                sudo systemctl restart vsftpd
-                echo "🔄 FTP Reiniciado"
-                sleep 2
-                ;;
-            6)
-                echo "Saindo..."
-                sleep 1
-                break
-                ;;
-            *)
-                echo "Opção inválida!"
-                sleep 2
-                ;;
-        esac
-    done
-}
+    (
+        apt-get update -qq
+        apt-get install -y vsftpd >"$LOG" 2>&1
+    ) &
+    PID=$!
 
-#=============================
-# Configurações do FTP
-#=============================
-config_menu() {
-    while true; do
-        clear
-        echo "===== Configurações do vsftpd ====="
-        echo "1) Permitir acesso anônimo"
-        echo "2) Permitir login de usuários locais"
-        echo "3) Restringir usuários às suas pastas (chroot)"
-        echo "4) Ativar SSL/TLS"
-        echo "5) Alterar porta padrão (21)"
-        echo "6) Limitar conexões simultâneas"
-        echo "7) Voltar"
-        echo "====================================="
-        read -p "Escolha uma opção: " conf
+    (
+        SPIN='-\|/'
+        i=0
+        PROGRESS=5
 
-        case $conf in
-            1)
-                toggle_option "anonymous_enable"
-                ;;
-            2)
-                toggle_option "local_enable"
-                ;;
-            3)
-                toggle_option "chroot_local_user"
-                ;;
-            4)
-                configure_ssl
-                ;;
-            5)
-                change_port
-                ;;
-            6)
-                configure_limit
-                ;;
-            7)
-                break
-                ;;
-            *)
-                echo "Opção inválida!"
-                sleep 2
-                ;;
-        esac
-    done
-}
+        while kill -0 $PID 2>/dev/null; do
+            if [ -f "$LOG" ]; then
+                LINES=$(wc -l < "$LOG")
+                TARGET=$((LINES * 3))
+                [ "$TARGET" -gt 90 ] && TARGET=90
+            else
+                TARGET=10
+            fi
 
-#=============================
-# Funções auxiliares
-#=============================
-toggle_option() {
-    option="$1"
-    file="/etc/vsftpd.conf"
-    value=$(grep -E "^$option=" "$file" | awk -F= '{print $2}')
-    if [[ "$value" == "YES" ]]; then
-        sudo sed -i "s/^$option=YES/$option=NO/" $file
-        echo "❌ $option desativado."
+            if [ "$PROGRESS" -lt "$TARGET" ]; then
+                PROGRESS=$((PROGRESS + 1))
+            fi
+
+            i=$(( (i + 1) % 4 ))
+            echo "$PROGRESS"
+            echo "Instalando vsftpd... ${SPIN:$i:1}"
+            sleep 0.2
+        done
+
+        while [ "$PROGRESS" -lt 100 ]; do
+            PROGRESS=$((PROGRESS + 2))
+            echo "$PROGRESS"
+            echo "Finalizando instalação..."
+            sleep 0.1
+        done
+    ) | dialog --gauge "Instalando vsftpd..." 10 70 0
+
+    wait $PID
+    RET=$?
+
+    if [ $RET -eq 0 ]; then
+        dialog --msgbox "✅ vsftpd instalado com sucesso!" 6 50
     else
-        sudo sed -i "s/^$option=NO/$option=YES/" $file 2>/dev/null || echo "$option=YES" | sudo tee -a $file > /dev/null
-        echo "✅ $option ativado."
+        dialog --msgbox "❌ Erro na instalação. Verifique $LOG" 8 60
+        exit 1
     fi
-    sudo systemctl restart vsftpd
-    sleep 2
 }
 
-configure_ssl() {
-    echo "Ativando SSL..."
-    sudo openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
-        -keyout /etc/ssl/private/vsftpd.key \
-        -out /etc/ssl/certs/vsftpd.crt \
-        -subj "/C=BR/ST=SP/L=SP/O=FTPServer/OU=TI/CN=ftp.local"
-    
-    sudo sed -i '/^ssl_enable/d' /etc/vsftpd.conf
-    echo "ssl_enable=YES" | sudo tee -a /etc/vsftpd.conf > /dev/null
-    echo "rsa_cert_file=/etc/ssl/certs/vsftpd.crt" | sudo tee -a /etc/vsftpd.conf > /dev/null
-    echo "rsa_private_key_file=/etc/ssl/private/vsftpd.key" | sudo tee -a /etc/vsftpd.conf > /dev/null
-    echo "require_ssl_reuse=NO" | sudo tee -a /etc/vsftpd.conf > /dev/null
-    echo "ssl_ciphers=HIGH" | sudo tee -a /etc/vsftpd.conf > /dev/null
-    echo "✅ SSL ativado!"
-    sudo systemctl restart vsftpd
-    sleep 2
+# Função para editar configuração do vsftpd
+editar_configuracao() {
+    nano /etc/vsftpd.conf
 }
 
-change_port() {
-    read -p "Digite a nova porta para o FTP: " porta
-    sudo sed -i '/^listen_port/d' /etc/vsftpd.conf
-    echo "listen_port=$porta" | sudo tee -a /etc/vsftpd.conf > /dev/null
-    sudo ufw allow $porta/tcp
-    echo "✅ Porta alterada para $porta"
-    sudo systemctl restart vsftpd
-    sleep 2
+# Função para aplicar algumas configurações básicas via menu
+configurar_ftp() {
+    while true; do
+        SUB_OPCAO=$(dialog --stdout --menu "⚙️ Configurar FTP" 20 70 10 \
+            1 "Permitir conexões anônimas (padrão: NO)" \
+            2 "Ativar login de usuários locais" \
+            3 "Permitir upload" \
+            4 "Ativar chroot (travar usuário na pasta)" \
+            5 "Editar manualmente (nano)" \
+            6 "Reiniciar FTP" \
+            0 "Voltar")
+
+        [ $? -ne 0 ] && break
+
+        case $SUB_OPCAO in
+            1)
+                sed -i '/^anonymous_enable=/d' /etc/vsftpd.conf
+                dialog --yesno "Permitir conexões anônimas?" 7 50
+                if [ $? -eq 0 ]; then
+                    echo "anonymous_enable=YES" >> /etc/vsftpd.conf
+                else
+                    echo "anonymous_enable=NO" >> /etc/vsftpd.conf
+                fi
+                ;;
+            2)
+                sed -i '/^local_enable=/d' /etc/vsftpd.conf
+                echo "local_enable=YES" >> /etc/vsftpd.conf
+                dialog --msgbox "✅ Login de usuários locais ativado." 6 40
+                ;;
+            3)
+                sed -i '/^write_enable=/d' /etc/vsftpd.conf
+                dialog --yesno "Permitir upload e escrita?" 7 50
+                if [ $? -eq 0 ]; then
+                    echo "write_enable=YES" >> /etc/vsftpd.conf
+                    dialog --msgbox "✅ Upload ativado." 6 40
+                else
+                    echo "write_enable=NO" >> /etc/vsftpd.conf
+                    dialog --msgbox "🚫 Upload desativado." 6 40
+                fi
+                ;;
+            4)
+                sed -i '/^chroot_local_user=/d' /etc/vsftpd.conf
+                echo "chroot_local_user=YES" >> /etc/vsftpd.conf
+                dialog --msgbox "🔐 Usuários agora estão presos em suas pastas home." 6 50
+                ;;
+            5)
+                editar_configuracao
+                ;;
+            6)
+                systemctl restart vsftpd
+                dialog --msgbox "🔄 FTP reiniciado com sucesso." 6 40
+                ;;
+            0)
+                break
+                ;;
+        esac
+    done
 }
 
-configure_limit() {
-    read -p "Digite o número máximo de conexões: " conex
-    sudo sed -i '/^max_clients/d' /etc/vsftpd.conf
-    echo "max_clients=$conex" | sudo tee -a /etc/vsftpd.conf > /dev/null
-    echo "✅ Limite de conexões definido para $conex"
-    sudo systemctl restart vsftpd
-    sleep 2
-}
-
-#=============================
-# Menu principal
-#=============================
+# Menu principal FTP
 while true; do
-    clear
-    echo "====== Servidor FTP ======"
-    echo "1) Instalar FTP"
-    echo "2) Gerenciar FTP"
-    echo "3) Sair"
-    echo "=========================="
-    read -p "Escolha uma opção: " main
+    OPCAO=$(dialog --stdout --menu "Menu FTP" 15 60 5 \
+        1 "Instalar vsftpd" \
+        2 "Configurar FTP" \
+        0 "Voltar")
 
-    case $main in
-        1) install_ftp ;;
-        2) manage_ftp ;;
-        3) echo "Saindo..."; sleep 1; exit ;;
-        *) echo "Opção inválida!"; sleep 2 ;;
+    [ $? -ne 0 ] && break
+
+    case $OPCAO in
+        1)
+            instalar_ftp
+            ;;
+        2)
+            configurar_ftp
+            ;;
+        0)
+            break
+            ;;
     esac
 done
