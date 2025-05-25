@@ -197,6 +197,49 @@ restaurar_backup() {
     fi
 }
 
+readme() {
+    MSG="🗒️ README / AJUDA
+
+    
+👉 Testar se o serviço está rodando:
+    sudo systemctl status mariadb
+
+👉 Iniciar o serviço (se não estiver ativo):
+    sudo systemctl start mariadb
+
+👉 Ativar na inicialização:
+    sudo systemctl enable mariadb
+
+👉 Acessar MySQL/MariaDB:
+    sudo mysql -u root -p
+
+👉 Comandos úteis dentro do MySQL:
+    CREATE DATABASE teste;
+    USE teste;
+    CREATE TABLE usuarios (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      nome VARCHAR(100),
+      email VARCHAR(100)
+    );
+    INSERT INTO usuarios (nome, email) VALUES ('Joao', 'joao@email.com');
+    SELECT * FROM usuarios;
+
+👉 Script de segurança recomendado:
+    sudo mysql_secure_installation
+
+👉 Backup manual:
+    mysqldump -uroot -p banco > backup.sql
+
+👉 Restore manual:
+    mysql -uroot -p banco < backup.sql
+
+👉 Sair do MySQL:
+    EXIT;
+
+"
+    dialog --title "README / AJUDA" --msgbox "$MSG" 30 80
+}
+
 menu_principal() {
     while true; do
         opcao=$(dialog --stdout --menu "Gerenciamento MySQL/MariaDB" 20 60 15 \
