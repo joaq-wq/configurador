@@ -48,7 +48,7 @@ while true; do
         3) bash ./configurar_ftp.sh ;;
         4) bash ./configurar_dhcp.sh ;;
         5) dialog --msgbox "🚧 Em construção..." 6 40 ;;
-        6) dialog --msgbox "🚧 Em construção..." 6 40 ;;
+        6) bash ./configurar_sql.sh ;;
         7) bash ./configurar_firewall.sh ;;
         8) dialog --msgbox "🚧 Em construção..." 6 40 ;;
         9) bash ./configurar_apache.sh ;;
