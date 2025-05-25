@@ -1,101 +1,103 @@
 #!/bin/bash
 
-# Verificar se é root
-if [ "$EUID" -ne 0 ]; then
-    echo "Execute como root ou com sudo."
-    exit 1
-fi
-
-# Verificar dependência 'dialog'
-if ! command -v dialog &>/dev/null; then
-    echo "Instalando dependência 'dialog'..."
-    apt-get update && apt-get install -y dialog
-fi
-
-# Função instalar Apache
-instalar_apache() {
-    if ! dpkg -l | grep -qw apache2; then
-        dialog --infobox "Instalando Apache..." 5 40
-        apt-get update -qq
-        apt-get install -y apache2
-        dialog --msgbox "✅ Apache instalado com sucesso!" 6 50
+# Função para detectar distro e definir o gerenciador de pacotes e nome do pacote apache
+detectar_distro() {
+    if [ -f /etc/arch-release ]; then
+        DISTRO="arch"
+        APACHE_PKG="apache"
+        APACHE_SVC="httpd"
+        PKG_INSTALL="pacman -Sy --noconfirm"
+    elif [ -f /etc/debian_version ]; then
+        DISTRO="debian"
+        APACHE_PKG="apache2"
+        APACHE_SVC="apache2"
+        PKG_INSTALL="apt update && apt install -y"
     else
-        dialog --msgbox "✅ Apache já está instalado." 6 50
+        DISTRO="unknown"
     fi
 }
 
-# Função pegar status do Apache formatado
-status_apache() {
-    STATUS=$(systemctl is-active apache2)
-    case $STATUS in
-        active)
-            echo "🟢 Ativo"
-            ;;
-        inactive)
-            echo "🔴 Inativo"
-            ;;
-        failed)
-            echo "❌ Falhou"
-            ;;
-        *)
-            echo "⚠️ Desconhecido"
-            ;;
-    esac
+# Verifica se apache está instalado (serviço existe e instalado)
+apache_instalado() {
+    if systemctl status "$APACHE_SVC" >/dev/null 2>&1; then
+        return 0  # instalado
+    else
+        return 1  # não instalado
+    fi
 }
 
-# Função gerenciar serviço do Apache
-gerenciar_servico_apache() {
+# Instalar apache
+instalar_apache() {
+    if apache_instalado; then
+        dialog --msgbox "✅ Apache já está instalado." 6 40
+    else
+        dialog --yesno "Apache não está instalado.\nDeseja instalar agora?" 7 50
+        if [ $? -eq 0 ]; then
+            if [ "$DISTRO" = "unknown" ]; then
+                dialog --msgbox "Sua distro não é suportada para instalação automática.\nInstale manualmente." 7 50
+            else
+                dialog --infobox "Instalando Apache, aguarde..." 4 40
+                $PKG_INSTALL $APACHE_PKG >/dev/null 2>&1
+                if apache_instalado; then
+                    dialog --msgbox "✅ Apache instalado com sucesso!" 6 40
+                    systemctl enable "$APACHE_SVC"
+                    systemctl start "$APACHE_SVC"
+                else
+                    dialog --msgbox "❌ Falha ao instalar Apache." 6 40
+                fi
+            fi
+        fi
+    fi
+}
+
+# Iniciar Apache
+start_apache() {
+    systemctl start "$APACHE_SVC" && dialog --msgbox "✅ Apache iniciado." 6 40 || dialog --msgbox "❌ Falha ao iniciar Apache." 6 40
+}
+
+# Parar Apache
+stop_apache() {
+    systemctl stop "$APACHE_SVC" && dialog --msgbox "✅ Apache parado." 6 40 || dialog --msgbox "❌ Falha ao parar Apache." 6 40
+}
+
+# Reiniciar Apache
+restart_apache() {
+    systemctl restart "$APACHE_SVC" && dialog --msgbox "✅ Apache reiniciado." 6 40 || dialog --msgbox "❌ Falha ao reiniciar Apache." 6 40
+}
+
+# Mostrar status completo Apache
+status_apache() {
+    STATUS=$(systemctl status "$APACHE_SVC" --no-pager)
+    dialog --msgbox "$STATUS" 20 80
+}
+
+# Menu principal do Apache
+menu_apache() {
     while true; do
-        STATUS_ATUAL=$(status_apache)
-
-        OPCAO=$(dialog --stdout --menu "🔧 Gerenciar Apache (Status: $STATUS_ATUAL)" 15 60 6 \
-            1 "Iniciar Apache" \
-            2 "Parar Apache" \
-            3 "Reiniciar Apache" \
-            4 "Ver status completo" \
+        OPCAO=$(dialog --stdout --menu "Gerenciamento do Apache ($APACHE_SVC)" 15 60 7 \
+            1 "Instalar Apache" \
+            2 "Iniciar Apache" \
+            3 "Parar Apache" \
+            4 "Reiniciar Apache" \
+            5 "Status completo Apache" \
             0 "Voltar")
-
+        
         [ $? -ne 0 ] && break
-
+        
         case $OPCAO in
-            1)
-                systemctl start apache2
-                dialog --msgbox "✅ Apache iniciado." 6 40
-                ;;
-            2)
-                systemctl stop apache2
-                dialog --msgbox "🛑 Apache parado." 6 40
-                ;;
-            3)
-                systemctl restart apache2
-                dialog --msgbox "🔄 Apache reiniciado." 6 40
-                ;;
-            4)
-                systemctl status apache2 > /tmp/apache_status.txt
-                dialog --textbox /tmp/apache_status.txt 20 70
-                rm -f /tmp/apache_status.txt
-                ;;
-            0)
-                break
-                ;;
+            1) instalar_apache ;;
+            2) start_apache ;;
+            3) stop_apache ;;
+            4) restart_apache ;;
+            5) status_apache ;;
+            0) break ;;
         esac
     done
 }
 
-# -------- Menu principal do Apache --------
-while true; do
-    STATUS_MENU=$(status_apache)
+# Início do script
+detectar_distro
 
-    OPCAO=$(dialog --stdout --menu "🅰️ Menu Apache (Status: $STATUS_MENU)" 15 60 4 \
-        1 "Instalar Apache" \
-        2 "Gerenciar Serviço" \
-        0 "Voltar")
+# Apenas para teste rápido, rodar o menu do apache diretamente
+menu_apache
 
-    [ $? -ne 0 ] && break
-
-    case $OPCAO in
-        1) instalar_apache ;;
-        2) gerenciar_servico_apache ;;
-        0) break ;;
-    esac
-done
