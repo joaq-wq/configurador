@@ -31,6 +31,7 @@ while true; do
     6 "Configurar SQL" \
     7 "Configurar Firewall" \
     8 "Configurar Telnet" \
+    9 "Configurar Apache" \
     0 "Sair")
 
     RET=$?
@@ -50,6 +51,7 @@ while true; do
         6) dialog --msgbox "🚧 Em construção..." 6 40 ;;
         7) bash ./configurar_firewall.sh ;;
         8) dialog --msgbox "🚧 Em construção..." 6 40 ;;
+        9) bash ./configurar_apache.sh ;;
         0) clear; exit 0 ;;
         *) dialog --msgbox "❌ Opção inválida!" 6 40 ;;
     esac
