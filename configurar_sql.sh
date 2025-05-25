@@ -254,6 +254,7 @@ menu_principal() {
         9 "Alterar senha root" \
         10 "Backup banco de dados" \
         11 "Restaurar backup" \
+        12 "README / Ajuda" \
         0 "Sair")
 
         case $opcao in
@@ -268,6 +269,7 @@ menu_principal() {
             9) if tenta_conexao; then alterar_senha_root; else dialog --msgbox "❌ Falha na conexão MySQL." 6 40; fi ;;
             10) if tenta_conexao; then backup_banco; else dialog --msgbox "❌ Falha na conexão MySQL." 6 40; fi ;;
             11) if tenta_conexao; then restaurar_backup; else dialog --msgbox "❌ Falha na conexão MySQL." 6 40; fi ;;
+            12) readme ;;
             0) clear; exit 0 ;;
             *) dialog --msgbox "Opção inválida." 6 30 ;;
         esac
