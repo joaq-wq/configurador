@@ -6,35 +6,73 @@ if [ "$EUID" -ne 0 ]; then
     exit 1
 fi
 
-APACHE_SERVICE="apache2"
-HTPASSWD_FILE="/etc/apache2/.htpasswd"
-
 # Detectar distribuição
 if command -v pacman &>/dev/null; then
+    DISTRO="arch"
+    APACHE_PKG="apache"
     APACHE_SERVICE="httpd"
     HTPASSWD_FILE="/etc/httpd/.htpasswd"
-    A2ENMOD=""
-    A2DISSITE=""
+    LOG_FILE="/var/log/httpd/error_log"
 elif command -v apt &>/dev/null; then
+    DISTRO="debian"
+    APACHE_PKG="apache2"
     APACHE_SERVICE="apache2"
-    A2ENMOD="a2enmod"
-    A2DISSITE="a2dissite"
+    HTPASSWD_FILE="/etc/apache2/.htpasswd"
+    LOG_FILE="/var/log/apache2/error.log"
+else
+    echo "Distribuição não suportada."
+    exit 1
 fi
 
 # Verificar dependências
-for pkg in apachectl dialog apache2-utils; do
-    if ! command -v $pkg &>/dev/null; then
-        echo "Instale o pacote '$pkg' antes de continuar."
-        exit 1
+instalar_dependencias() {
+    if ! command -v dialog &>/dev/null; then
+        if [ "$DISTRO" = "arch" ]; then
+            pacman -Sy --noconfirm dialog
+        else
+            apt update && apt install -y dialog
+        fi
     fi
-done
+
+    if ! command -v htpasswd &>/dev/null; then
+        if [ "$DISTRO" = "arch" ]; then
+            pacman -Sy --noconfirm apache
+        else
+            apt install -y apache2-utils
+        fi
+    fi
+}
+
+# Verificar se Apache está instalado
+apache_instalado() {
+    if [ "$DISTRO" = "arch" ]; then
+        pacman -Q $APACHE_PKG &>/dev/null
+    else
+        dpkg -l | grep -q $APACHE_PKG
+    fi
+}
+
+# Instalar Apache
+instalar_apache() {
+    if apache_instalado; then
+        dialog --msgbox "✅ Apache já está instalado." 6 40
+    else
+        dialog --infobox "Instalando Apache..." 5 40
+        if [ "$DISTRO" = "arch" ]; then
+            pacman -Sy --noconfirm $APACHE_PKG
+        else
+            apt update && apt install -y $APACHE_PKG
+        fi
+        dialog --msgbox "✅ Apache instalado com sucesso." 6 40
+    fi
+}
 
 # Função status do Apache
 apache_status() {
     systemctl is-active $APACHE_SERVICE &>/dev/null && echo "🟢 Ativo" || echo "🔴 Inativo"
 }
 
-# Gerenciar usuários .htpasswd
+# Gerenciar usuários
 gerenciar_usuarios() {
     mkdir -p "$(dirname "$HTPASSWD_FILE")"
 
@@ -89,10 +127,10 @@ gerenciar_servico() {
             2 "Stop 🔻" \
             3 "Restart ♻️" \
             4 "Reload 🔃" \
-            5 "Enable (iniciar junto ao boot) ✅" \
+            5 "Enable (boot) ✅" \
             6 "Disable ❌" \
-            7 "Ver Status Atual 🏷️" \
-            8 "Verificar Configuração 🛠️" \
+            7 "Ver Status 🏷️" \
+            8 "Verificar Config 🛠️" \
             0 "Voltar")
 
         [ $? -ne 0 ] && break
@@ -105,7 +143,7 @@ gerenciar_servico() {
             5) systemctl enable $APACHE_SERVICE ;;
             6) systemctl disable $APACHE_SERVICE ;;
             7) systemctl status $APACHE_SERVICE | less ;;
-            8) apachectl configtest | dialog --msgbox "$(cat)" 10 50 ;;
+            8) apachectl configtest | dialog --msgbox "$(apachectl configtest 2>&1)" 10 50 ;;
             0) break ;;
         esac
     done
@@ -113,19 +151,20 @@ gerenciar_servico() {
 
 # Ver Logs
 ver_logs() {
-    LOG_FILE="/var/log/${APACHE_SERVICE}/error.log"
-    [ ! -f "$LOG_FILE" ] && LOG_FILE="/var/log/httpd/error_log"
     dialog --textbox "$LOG_FILE" 20 80
 }
 
 # Alterar Porta HTTP
 alterar_porta() {
-    CONF_FILE="/etc/${APACHE_SERVICE}/ports.conf"
-    [ ! -f "$CONF_FILE" ] && CONF_FILE="/etc/httpd/conf/httpd.conf"
+    if [ "$DISTRO" = "arch" ]; then
+        CONF_FILE="/etc/httpd/conf/httpd.conf"
+    else
+        CONF_FILE="/etc/apache2/ports.conf"
+    fi
 
     PORTA_ATUAL=$(grep -E '^Listen ' "$CONF_FILE" | awk '{print $2}' | head -n1)
 
-    NOVA_PORTA=$(dialog --stdout --inputbox "Porta atual: $PORTA_ATUAL\nDigite a nova porta:" 8 50 "$PORTA_ATUAL")
+    NOVA_PORTA=$(dialog --stdout --inputbox "Porta atual: $PORTA_ATUAL\nDigite nova porta:" 8 50 "$PORTA_ATUAL")
     if [[ "$NOVA_PORTA" =~ ^[0-9]+$ ]] && [ "$NOVA_PORTA" -ge 1 ] && [ "$NOVA_PORTA" -le 65535 ]; then
         sed -i "s/^Listen .*/Listen $NOVA_PORTA/" "$CONF_FILE"
         dialog --msgbox "✅ Porta alterada para $NOVA_PORTA\nReinicie o Apache para aplicar." 8 50
@@ -134,31 +173,57 @@ alterar_porta() {
     fi
 }
 
-# Informações Gerais do Apache
+# Informações Gerais
 info_apache() {
     INFO=$(apachectl -v; echo; apachectl -M)
     echo "$INFO" | dialog --textbox - 25 80
 }
 
+# Menu Gerenciar Apache
+menu_gerenciar_apache() {
+    while true; do
+        STATUS=$(apache_status)
+        OP=$(dialog --stdout --menu "🖥️ Painel Apache ($STATUS)" 20 70 9 \
+            1 "Gerenciar Usuários 🔐" \
+            2 "Gerenciar Serviço ⚙️" \
+            3 "Ver Logs 📜" \
+            4 "Alterar Porta 🌐" \
+            5 "Informações Gerais ℹ️" \
+            0 "Voltar ❌")
+
+        [ $? -ne 0 ] && break
+
+        case $OP in
+            1) gerenciar_usuarios ;;
+            2) gerenciar_servico ;;
+            3) ver_logs ;;
+            4) alterar_porta ;;
+            5) info_apache ;;
+            0) break ;;
+        esac
+    done
+}
+
 # Menu Principal
+instalar_dependencias
+
 while true; do
-    STATUS=$(apache_status)
-    OP=$(dialog --stdout --menu "🖥️ Painel Apache ($STATUS)" 20 70 9 \
-        1 "Gerenciar Usuários 🔐" \
-        2 "Gerenciar Serviço ⚙️" \
-        3 "Ver Logs 📜" \
-        4 "Alterar Porta 🌐" \
-        5 "Informações Gerais ℹ️" \
-        0 "Sair ❌")
+    OP=$(dialog --stdout --menu "🚀 Gerenciador Apache" 15 60 3 \
+        1 "Instalar Apache" \
+        2 "Gerenciar Apache" \
+        0 "Sair")
 
     [ $? -ne 0 ] && break
 
     case $OP in
-        1) gerenciar_usuarios ;;
-        2) gerenciar_servico ;;
-        3) ver_logs ;;
-        4) alterar_porta ;;
-        5) info_apache ;;
+        1) instalar_apache ;;
+        2)
+            if apache_instalado; then
+                menu_gerenciar_apache
+            else
+                dialog --msgbox "❌ Apache não está instalado. Instale primeiro." 6 50
+            fi
+            ;;
         0) break ;;
     esac
 done
