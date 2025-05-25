@@ -47,10 +47,10 @@ while true; do
         2) bash ./configurar_dns.sh ;;
         3) bash ./configurar_ftp.sh ;;
         4) bash ./configurar_dhcp.sh ;;
-        5) dialog --msgbox "🚧 Em construção..." 6 40 ;;
+        5) bash ./configurar_proxy.sh ;;
         6) bash ./configurar_sql.sh ;;
         7) bash ./configurar_firewall.sh ;;
-        8) dialog --msgbox "🚧 Em construção..." 6 40 ;;
+        8) bash ./configurar_telnet.sh ;;
         9) bash ./configurar_apache.sh ;;
         0) clear; exit 0 ;;
         *) dialog --msgbox "❌ Opção inválida!" 6 40 ;;
