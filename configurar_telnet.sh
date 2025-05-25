@@ -135,42 +135,40 @@ gerenciar_telnet() {
     esac
 }
 
-# ========== LEIA IMPORTANTE ==========
 leia_importante() {
-    dialog --textbox <(cat <<'EOF'
+    cat <<'EOF' > /tmp/leia_telnet.txt
 ==============================
       ⚠️ LEIA IMPORTANTE ⚠️
 ==============================
 
-Este script gerencia o servidor TELNET.
+Este script gerencia o servidor Telnet.
 
-🚫 Telnet não é seguro, pois transmite dados e senhas em texto puro. Use apenas em redes privadas e com firewall.
+🕗 Atenção:
+- Em versões antigas do Ubuntu (< 22.04), usa-se xinetd + telnetd.
+- Em versões mais novas (> 22.04), o xinetd foi removido dos repositórios oficiais.
 
-==============================
-💡 Diferença entre versões:
-
-🕗 VERSÕES ANTIGAS (Ubuntu até 22.04, Debian anteriores):
-- Usa o serviço `xinetd` para gerenciar conexões.
-- Arquivo de configuração: /etc/xinetd.d/telnet
-
-🆕 VERSÕES NOVAS (Ubuntu 24.04+, Debian Bookworm+):
-- Usa `inetutils-inetd` ou substituto.
-- Arquivo de configuração: /etc/inetd.conf
-- `xinetd` foi removido dos repositórios.
+✅ O script detecta sua versão e permite instalar o método correto:
+- Método antigo: telnetd + xinetd
+- Método atual: telnetd + alternativas compatíveis
 
 ==============================
-🚀 Como acessar:
-- No cliente, use: telnet <ip-servidor>
+🚫 Segurança:
+- Telnet NÃO é seguro. Toda comunicação é texto puro.
+- Recomendado usar somente em redes internas ou para testes.
+- Para acesso remoto seguro, use SSH.
 
 ==============================
-🔒 RECOMENDAÇÃO:
-- Use SSH sempre que possível.
-- Bloqueie portas Telnet na internet.
+📜 Arquivos importantes:
+- /etc/inetd.conf ou /etc/xinetd.d/telnet (versões antigas)
+- /etc/default/telnetd ou configuração direta via serviço (novas)
 
 ==============================
 EOF
-) 25 80
+
+    dialog --textbox /tmp/leia_telnet.txt 25 80
+    rm -f /tmp/leia_telnet.txt
 }
+
 
 # ========== Menu Principal ==========
 main_menu() {
