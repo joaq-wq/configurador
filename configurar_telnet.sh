@@ -163,6 +163,75 @@ Este script gerencia o servidor Telnet.
 - /etc/default/telnetd ou configuração direta via serviço (novas)
 
 ==============================
+PASSO A PASSO PARA CONFIGURAR
+O que é Telnet?
+- Permite acessar outros dispositivos via terminal.
+- NÃO é seguro para uso externo, apenas para redes internas ou testes.
+
+Instalar Telnet (Cliente) no Linux:
+sudo apt update
+sudo apt install -y telnet
+
+Instalar Telnet (Servidor) no Linux:
+sudo apt update
+sudo apt install -y xinetd telnetd
+
+Configurar Servidor Telnet:
+1. Crie o arquivo /etc/xinetd.d/telnet
+sudo nano /etc/xinetd.d/telnet
+
+2. Adicione:
+service telnet
+{
+    disable         = no
+    flags           = REUSE
+    socket_type     = stream
+    wait            = no
+    user            = root
+    server          = /usr/sbin/in.telnetd
+    log_on_failure  += USERID
+}
+
+3. Reinicie o serviço:
+sudo systemctl restart xinetd
+sudo systemctl enable xinetd
+
+4. Libere no firewall (se ativo):
+sudo ufw allow 23
+
+Testar Conexão Telnet:
+De outro PC:
+telnet <IP>
+
+Exemplo:
+telnet 192.168.0.100
+
+Login com usuário e senha do sistema.
+
+Habilitar login root (opcional e inseguro):
+1. Edite:
+sudo nano /etc/securetty
+
+2. Adicione:
+pts/0
+pts/1
+pts/2
+
+3. Defina senha root:
+sudo passwd root
+
+Desativar Telnet:
+sudo systemctl stop xinetd
+sudo systemctl disable xinetd
+sudo ufw deny 23
+
+Observação:
+Use Telnet APENAS para testes locais.
+Prefira SSH para acesso seguro (porta 22).
+
+
+
+==============================
 EOF
 
     dialog --textbox /tmp/leia_telnet.txt 25 80
