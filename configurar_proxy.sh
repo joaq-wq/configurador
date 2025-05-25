@@ -127,9 +127,8 @@ gerenciar_proxy() {
     esac
 }
 
-# ========== LEIA IMPORTANTE ==========
 leia_importante() {
-    dialog --textbox <(cat <<'EOF'
+    cat <<'EOF' > /tmp/leia_proxy.txt
 ==============================
       ⚠️ LEIA IMPORTANTE ⚠️
 ==============================
@@ -163,8 +162,11 @@ Porta: 3128
 
 ==============================
 EOF
-) 25 80
+
+    dialog --textbox /tmp/leia_proxy.txt 25 80
+    rm -f /tmp/leia_proxy.txt
 }
+
 
 # ========== Menu Principal ==========
 main_menu() {
