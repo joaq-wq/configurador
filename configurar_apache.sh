@@ -1,169 +1,164 @@
 #!/bin/bash
 
-# ===================== [ GERENCIADOR APACHE ] =====================
-
 # Verificar se é root
 if [ "$EUID" -ne 0 ]; then
-    echo "⚠️ Execute este script como root ou com sudo."
+    echo "Execute este script como root."
     exit 1
 fi
 
-# Verificar dependência dialog
-if ! command -v dialog &>/dev/null; then
-    apt-get update && apt-get install -y dialog
+APACHE_SERVICE="apache2"
+HTPASSWD_FILE="/etc/apache2/.htpasswd"
+
+# Detectar distribuição
+if command -v pacman &>/dev/null; then
+    APACHE_SERVICE="httpd"
+    HTPASSWD_FILE="/etc/httpd/.htpasswd"
+    A2ENMOD=""
+    A2DISSITE=""
+elif command -v apt &>/dev/null; then
+    APACHE_SERVICE="apache2"
+    A2ENMOD="a2enmod"
+    A2DISSITE="a2dissite"
 fi
 
-APACHE_CONF_DIR="/etc/apache2/sites-available"
-
-# ===================== Função - Instalar Apache =====================
-instalar_apache() {
-    if dpkg -l | grep -qw apache2; then
-        dialog --msgbox "✅ Apache já está instalado." 6 40
-        return
+# Verificar dependências
+for pkg in apachectl dialog apache2-utils; do
+    if ! command -v $pkg &>/dev/null; then
+        echo "Instale o pacote '$pkg' antes de continuar."
+        exit 1
     fi
+done
 
-    (
-        for i in {1..100}; do
-            if [ $i -eq 10 ]; then echo "# Atualizando pacotes..."; fi
-            if [ $i -eq 40 ]; then echo "# Instalando Apache..."; fi
-            if [ $i -eq 70 ]; then echo "# Finalizando instalação..."; fi
-            sleep 0.03
-            echo $i
-        done | dialog --gauge "🔧 Instalando servidor Apache..." 10 70 0
-        apt update -y >/dev/null 2>&1
-        apt install -y apache2 >/dev/null 2>&1
-    )
-
-    dialog --msgbox "✅ Apache instalado com sucesso!" 6 50
+# Função status do Apache
+apache_status() {
+    systemctl is-active $APACHE_SERVICE &>/dev/null && echo "🟢 Ativo" || echo "🔴 Inativo"
 }
 
-# ===================== Função - Criar Virtual Host =====================
-criar_virtualhost() {
-    DOMINIO=$(dialog --stdout --inputbox "🔤 Digite o domínio (ex: meusite.com):" 8 50)
-    [ -z "$DOMINIO" ] && return
+# Gerenciar usuários .htpasswd
+gerenciar_usuarios() {
+    mkdir -p "$(dirname "$HTPASSWD_FILE")"
 
-    DIR="/var/www/$DOMINIO"
-    CONF_FILE="$APACHE_CONF_DIR/$DOMINIO.conf"
-
-    mkdir -p "$DIR"
-    echo "<h1>Site $DOMINIO funcionando!</h1>" > "$DIR/index.html"
-
-    cat > "$CONF_FILE" <<EOF
-<VirtualHost *:80>
-    ServerName $DOMINIO
-    ServerAlias www.$DOMINIO
-
-    DocumentRoot $DIR
-
-    <Directory $DIR>
-        Options -Indexes +FollowSymLinks
-        AllowOverride All
-    </Directory>
-
-    ErrorLog \${APACHE_LOG_DIR}/$DOMINIO-error.log
-    CustomLog \${APACHE_LOG_DIR}/$DOMINIO-access.log combined
-</VirtualHost>
-EOF
-
-    a2ensite "$DOMINIO.conf" >/dev/null 2>&1
-
-    # Adicionar no /etc/hosts
-    grep -qxF "127.0.0.1 $DOMINIO www.$DOMINIO" /etc/hosts || echo "127.0.0.1 $DOMINIO www.$DOMINIO" >> /etc/hosts
-
-    systemctl reload apache2
-
-    dialog --msgbox "✅ Domínio $DOMINIO criado e ativado!\nAcesse: http://$DOMINIO" 8 60
-}
-
-# ===================== Função - Listar Virtual Hosts =====================
-listar_virtualhosts() {
-    VHOSTS=$(ls $APACHE_CONF_DIR | grep .conf | sed 's/.conf//')
-    echo "$VHOSTS" > /tmp/vhosts_list
-    dialog --textbox /tmp/vhosts_list 20 50
-}
-
-# ===================== Função - Remover Virtual Host =====================
-remover_virtualhost() {
-    DOMINIO=$(dialog --stdout --inputbox "Digite o domínio a remover:" 8 50)
-    [ -z "$DOMINIO" ] && return
-
-    a2dissite "$DOMINIO.conf" >/dev/null 2>&1
-    rm -f "$APACHE_CONF_DIR/$DOMINIO.conf"
-    rm -rf "/var/www/$DOMINIO"
-    sed -i "/$DOMINIO/d" /etc/hosts
-
-    systemctl reload apache2
-
-    dialog --msgbox "🗑️ Domínio $DOMINIO removido com sucesso." 7 50
-}
-
-# ===================== Função - Gerenciar Virtual Hosts =====================
-gerenciar_virtualhost() {
     while true; do
-        OPCAO=$(dialog --stdout --menu "🌐 Gerenciar Virtual Hosts" 15 60 5 \
-            1 "Criar novo Virtual Host" \
-            2 "Listar Virtual Hosts" \
-            3 "Remover Virtual Host" \
+        OP=$(dialog --stdout --menu "🔐 Gerenciar Usuários Apache (.htpasswd)" 15 60 5 \
+            1 "Adicionar Usuário" \
+            2 "Remover Usuário" \
+            3 "Listar Usuários" \
             0 "Voltar")
 
         [ $? -ne 0 ] && break
 
-        case $OPCAO in
-            1) criar_virtualhost ;;
-            2) listar_virtualhosts ;;
-            3) remover_virtualhost ;;
-            0) break ;;
-        esac
-    done
-}
-
-# ===================== Função - Configurações Gerais =====================
-configuracoes_apache() {
-    while true; do
-        OPCAO=$(dialog --stdout --menu "⚙️ Configurações do Apache" 15 60 5 \
-            1 "Editar arquivo principal (/etc/apache2/apache2.conf)" \
-            2 "Editar arquivo ports.conf" \
-            3 "Reiniciar Apache" \
-            4 "Verificar Status" \
-            0 "Voltar")
-
-        [ $? -ne 0 ] && break
-
-        case $OPCAO in
-            1) nano /etc/apache2/apache2.conf ;;
-            2) nano /etc/apache2/ports.conf ;;
+        case $OP in
+            1)
+                USR=$(dialog --stdout --inputbox "Digite o nome do usuário:" 8 40)
+                [ -z "$USR" ] && continue
+                if [ ! -f "$HTPASSWD_FILE" ]; then
+                    htpasswd -c "$HTPASSWD_FILE" "$USR"
+                else
+                    htpasswd "$HTPASSWD_FILE" "$USR"
+                fi
+                dialog --msgbox "✅ Usuário '$USR' adicionado/atualizado." 6 40
+                ;;
+            2)
+                if [ ! -f "$HTPASSWD_FILE" ]; then
+                    dialog --msgbox "❌ Arquivo .htpasswd não existe." 6 40
+                    continue
+                fi
+                USR=$(dialog --stdout --inputbox "Digite o nome do usuário a remover:" 8 40)
+                [ -z "$USR" ] && continue
+                htpasswd -D "$HTPASSWD_FILE" "$USR"
+                dialog --msgbox "❌ Usuário '$USR' removido." 6 40
+                ;;
             3)
-                systemctl restart apache2
-                dialog --msgbox "🔄 Apache reiniciado." 6 40
-                ;;
-            4)
-                systemctl status apache2 | tee /tmp/apache_status
-                dialog --textbox /tmp/apache_status 20 70
+                if [ ! -f "$HTPASSWD_FILE" ]; then
+                    dialog --msgbox "❌ Nenhum usuário encontrado." 6 40
+                else
+                    dialog --textbox "$HTPASSWD_FILE" 20 60
+                fi
                 ;;
             0) break ;;
         esac
     done
 }
 
-# ===================== Menu Principal =====================
-menu_principal() {
+# Gerenciar serviço Apache
+gerenciar_servico() {
     while true; do
-        OPCAO=$(dialog --stdout --menu "🚀 Gerenciador Apache" 15 60 6 \
-            1 "Instalar Apache" \
-            2 "Gerenciar Virtual Hosts" \
-            3 "Configurações Gerais" \
-            0 "Sair")
+        STATUS=$(apache_status)
+        OP=$(dialog --stdout --menu "⚙️ Serviço Apache ($STATUS)" 20 60 9 \
+            1 "Start 🔼" \
+            2 "Stop 🔻" \
+            3 "Restart ♻️" \
+            4 "Reload 🔃" \
+            5 "Enable (iniciar junto ao boot) ✅" \
+            6 "Disable ❌" \
+            7 "Ver Status Atual 🏷️" \
+            8 "Verificar Configuração 🛠️" \
+            0 "Voltar")
 
         [ $? -ne 0 ] && break
 
-        case $OPCAO in
-            1) instalar_apache ;;
-            2) gerenciar_virtualhost ;;
-            3) configuracoes_apache ;;
+        case $OP in
+            1) systemctl start $APACHE_SERVICE ;;
+            2) systemctl stop $APACHE_SERVICE ;;
+            3) systemctl restart $APACHE_SERVICE ;;
+            4) systemctl reload $APACHE_SERVICE ;;
+            5) systemctl enable $APACHE_SERVICE ;;
+            6) systemctl disable $APACHE_SERVICE ;;
+            7) systemctl status $APACHE_SERVICE | less ;;
+            8) apachectl configtest | dialog --msgbox "$(cat)" 10 50 ;;
             0) break ;;
         esac
     done
 }
 
-# ===================== Executa o Menu =====================
-menu_principal
+# Ver Logs
+ver_logs() {
+    LOG_FILE="/var/log/${APACHE_SERVICE}/error.log"
+    [ ! -f "$LOG_FILE" ] && LOG_FILE="/var/log/httpd/error_log"
+    dialog --textbox "$LOG_FILE" 20 80
+}
+
+# Alterar Porta HTTP
+alterar_porta() {
+    CONF_FILE="/etc/${APACHE_SERVICE}/ports.conf"
+    [ ! -f "$CONF_FILE" ] && CONF_FILE="/etc/httpd/conf/httpd.conf"
+
+    PORTA_ATUAL=$(grep -E '^Listen ' "$CONF_FILE" | awk '{print $2}' | head -n1)
+
+    NOVA_PORTA=$(dialog --stdout --inputbox "Porta atual: $PORTA_ATUAL\nDigite a nova porta:" 8 50 "$PORTA_ATUAL")
+    if [[ "$NOVA_PORTA" =~ ^[0-9]+$ ]] && [ "$NOVA_PORTA" -ge 1 ] && [ "$NOVA_PORTA" -le 65535 ]; then
+        sed -i "s/^Listen .*/Listen $NOVA_PORTA/" "$CONF_FILE"
+        dialog --msgbox "✅ Porta alterada para $NOVA_PORTA\nReinicie o Apache para aplicar." 8 50
+    else
+        dialog --msgbox "❌ Porta inválida." 6 40
+    fi
+}
+
+# Informações Gerais do Apache
+info_apache() {
+    INFO=$(apachectl -v; echo; apachectl -M)
+    echo "$INFO" | dialog --textbox - 25 80
+}
+
+# Menu Principal
+while true; do
+    STATUS=$(apache_status)
+    OP=$(dialog --stdout --menu "🖥️ Painel Apache ($STATUS)" 20 70 9 \
+        1 "Gerenciar Usuários 🔐" \
+        2 "Gerenciar Serviço ⚙️" \
+        3 "Ver Logs 📜" \
+        4 "Alterar Porta 🌐" \
+        5 "Informações Gerais ℹ️" \
+        0 "Sair ❌")
+
+    [ $? -ne 0 ] && break
+
+    case $OP in
+        1) gerenciar_usuarios ;;
+        2) gerenciar_servico ;;
+        3) ver_logs ;;
+        4) alterar_porta ;;
+        5) info_apache ;;
+        0) break ;;
+    esac
+done
